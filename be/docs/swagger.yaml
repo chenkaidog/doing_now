@@ -1,0 +1,200 @@
+basePath: /
+definitions:
+  dto.CommonResp:
+    properties:
+      code:
+        type: integer
+      data: {}
+      message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  dto.GetUserInfoResp:
+    properties:
+      account:
+        type: string
+      created_at:
+        type: integer
+      name:
+        type: string
+      updated_at:
+        type: integer
+      user_id:
+        type: string
+    type: object
+  dto.LoginReq:
+    properties:
+      account:
+        maxLength: 64
+        type: string
+      password:
+        maxLength: 128
+        type: string
+      username:
+        maxLength: 64
+        type: string
+    required:
+    - password
+    type: object
+  dto.LoginResp:
+    properties:
+      access_token:
+        type: string
+      expires_at:
+        type: integer
+    type: object
+  dto.LogoutReq:
+    type: object
+  dto.LogoutResp:
+    type: object
+  dto.RegisterReq:
+    properties:
+      account:
+        maxLength: 64
+        type: string
+      name:
+        maxLength: 64
+        type: string
+      password:
+        maxLength: 128
+        type: string
+    required:
+    - account
+    - name
+    - password
+    type: object
+  dto.RegisterResp:
+    properties:
+      user_id:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: doing now
+  title: Doing Now
+  version: "1.0"
+paths:
+  /api/v1/user/info:
+    get:
+      consumes:
+      - application/json
+      description: 获取用户信息接口
+      parameters:
+      - description: jwt
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/dto.CommonResp'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.GetUserInfoResp'
+              type: object
+      summary: 获取用户信息接口
+      tags:
+      - user
+  /api/v1/user/login:
+    post:
+      consumes:
+      - application/json
+      description: 用户登录接口
+      parameters:
+      - description: login request body
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/dto.LoginReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            set-cookie:
+              description: cookie
+              type: string
+          schema:
+            allOf:
+            - $ref: '#/definitions/dto.CommonResp'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.LoginResp'
+              type: object
+      summary: 用户登录接口
+      tags:
+      - user
+  /api/v1/user/logout:
+    post:
+      consumes:
+      - application/json
+      description: 用户登出接口
+      parameters:
+      - description: logout request body
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/dto.LogoutReq'
+      - description: jwt
+        in: header
+        name: Authorization
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            set-cookie:
+              description: cookie
+              type: string
+          schema:
+            allOf:
+            - $ref: '#/definitions/dto.CommonResp'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.LogoutResp'
+              type: object
+      summary: 用户登出接口
+      tags:
+      - user
+  /api/v1/user/register:
+    post:
+      consumes:
+      - application/json
+      description: 用户注册接口
+      parameters:
+      - description: register request body
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/dto.RegisterReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/dto.CommonResp'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.RegisterResp'
+              type: object
+      summary: 用户注册接口
+      tags:
+      - user
+schemes:
+- http
+swagger: "2.0"
