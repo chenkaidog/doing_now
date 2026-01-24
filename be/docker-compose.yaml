@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:latest
+    container_name: doing_now_mysql_compose
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: doing_now
+    networks:
+      - app_net
+    expose:
+      - "3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:latest
+    container_name: doing_now_redis_compose
+    networks:
+      - app_net
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+
+  app:
+    build: .
+    container_name: doing_now_app
+    ports:
+      - "8000:8000"
+    networks:
+      - app_net
+    depends_on:
+      - mysql
+      - redis
+    restart: always
+    volumes:
+      - app_logs:/var/log/app
+
+networks:
+  app_net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  app_logs:

@@ -3,8 +3,11 @@ module doing_now/be
 go 1.24.4
 
 require (
+	github.com/alicebob/miniredis/v2 v2.35.0
+	github.com/bytedance/mockey v1.4.2
 	github.com/cloudwego/hertz v0.10.3
 	github.com/go-playground/validator/v10 v10.15.4
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/hertz-contrib/cors v0.1.0
@@ -20,8 +23,6 @@ require (
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
-	github.com/alicebob/miniredis/v2 v2.35.0 // indirect
-	github.com/bytedance/mockey v1.4.2 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.2 // indirect
 	github.com/go-openapi/jsonpointer v0.20.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
@@ -29,7 +30,6 @@ require (
 	github.com/go-openapi/swag v0.22.4 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/gopherjs/gopherjs v1.12.80 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
