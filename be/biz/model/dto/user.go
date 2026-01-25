@@ -12,7 +12,6 @@ type RegisterResp struct {
 
 type LoginReq struct {
 	Account  string `json:"account" validate:"max=64"`
-	Username string `json:"username" validate:"max=64"`
 	Password string `json:"password" validate:"required,max=128"`
 }
 

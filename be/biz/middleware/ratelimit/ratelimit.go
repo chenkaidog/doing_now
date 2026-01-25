@@ -5,6 +5,7 @@ import (
 	"doing_now/be/biz/config"
 	"doing_now/be/biz/model/dto"
 	"doing_now/be/biz/model/errs"
+	"fmt"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
@@ -46,12 +47,14 @@ func New() app.HandlerFunc {
 			r = defaultRule
 		}
 
+		// Use path + IP as the rate limit key to avoid shared limits across different paths
 		var key string
 		if r.hasSession {
 			key = sessions.Default(c).ID()
 		} else {
 			key = c.ClientIP()
 		}
+		key = fmt.Sprintf("%s:%s", path, key)
 
 		allowed, err := r.interceptor.Allow(ctx, key)
 		if err != nil {

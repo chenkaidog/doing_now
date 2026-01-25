@@ -170,6 +170,58 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/user/refresh_token": {
+            "post": {
+                "description": "刷新token接口",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user"
+                ],
+                "summary": "刷新token接口",
+                "parameters": [
+                    {
+                        "description": "refresh token request body",
+                        "name": "req",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.RefreshTokenReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/dto.CommonResp"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/dto.RefreshTokenResp"
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        "headers": {
+                            "set-cookie": {
+                                "type": "string",
+                                "description": "cookie"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/user/register": {
             "post": {
                 "description": "用户注册接口",
@@ -266,10 +318,6 @@ const docTemplate = `{
                 "password": {
                     "type": "string",
                     "maxLength": 128
-                },
-                "username": {
-                    "type": "string",
-                    "maxLength": 64
                 }
             }
         },
@@ -289,6 +337,26 @@ const docTemplate = `{
         },
         "dto.LogoutResp": {
             "type": "object"
+        },
+        "dto.RefreshTokenReq": {
+            "type": "object"
+        },
+        "dto.RefreshTokenResp": {
+            "type": "object",
+            "properties": {
+                "access_token": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "integer"
+                },
+                "refresh_expires_at": {
+                    "type": "integer"
+                },
+                "refresh_token": {
+                    "type": "string"
+                }
+            }
         },
         "dto.RegisterReq": {
             "type": "object",

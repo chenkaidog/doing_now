@@ -31,9 +31,6 @@ definitions:
       password:
         maxLength: 128
         type: string
-      username:
-        maxLength: 64
-        type: string
     required:
     - password
     type: object
@@ -47,6 +44,19 @@ definitions:
   dto.LogoutReq:
     type: object
   dto.LogoutResp:
+    type: object
+  dto.RefreshTokenReq:
+    type: object
+  dto.RefreshTokenResp:
+    properties:
+      access_token:
+        type: string
+      expires_at:
+        type: integer
+      refresh_expires_at:
+        type: integer
+      refresh_token:
+        type: string
     type: object
   dto.RegisterReq:
     properties:
@@ -166,6 +176,37 @@ paths:
                   $ref: '#/definitions/dto.LogoutResp'
               type: object
       summary: 用户登出接口
+      tags:
+      - user
+  /api/v1/user/refresh_token:
+    post:
+      consumes:
+      - application/json
+      description: 刷新token接口
+      parameters:
+      - description: refresh token request body
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/dto.RefreshTokenReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            set-cookie:
+              description: cookie
+              type: string
+          schema:
+            allOf:
+            - $ref: '#/definitions/dto.CommonResp'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.RefreshTokenResp'
+              type: object
+      summary: 刷新token接口
       tags:
       - user
   /api/v1/user/register:
