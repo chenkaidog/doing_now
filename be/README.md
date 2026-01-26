@@ -32,7 +32,29 @@ swag init -g main.go -o docs
 swag fmt
 ```
 
-## 4. 部署步骤
+## 4. 单独构建与运行 (可选)
+
+如果你不使用 docker-compose，仅想手动管理应用镜像和容器，可以使用以下命令。
+
+### 1. 构建镜像 (Build)
+在项目根目录 (`be/`) 下执行：
+
+```bash
+docker build -t be-app:latest .
+```
+
+### 2. 运行容器 (Run)
+启动容器并映射端口 (8000)：
+
+```bash
+docker run -d -p 8000:8000 --name my-be-app be-app:latest
+```
+
+> **注意**：
+> *   通常推荐使用 `docker-compose up --build`，因为它会自动处理网络连接和依赖服务（MySQL/Redis）。
+> *   **单独运行**时，应用可能会因为连接不上 `mysql` 和 `redis` 主机名而报错（除非你配置了额外的 Docker 网络或修改了配置文件）。
+
+## 5. 部署步骤
 
 ### 第一步：准备配置
 
@@ -91,7 +113,7 @@ docker-compose up -d --build
     ```
     应输出 `users` 表。
 
-## 5. 常用维护命令
+## 6. 常用维护命令
 
 *   **停止服务**：
     ```bash

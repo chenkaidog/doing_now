@@ -52,17 +52,22 @@ func GetLoginProtectionConf() LoginProtectionConf {
 	return globalConfig.LoginProtection
 }
 
+func GetRegisterProtectionConf() RegisterProtectionConf {
+	return globalConfig.RegisterProtection
+}
+
 var globalConfig ServiceConf
 
 type ServiceConf struct {
-	MySQL           MySQLConf           `yaml:"mysql"`
-	Redis           RedisConf           `yaml:"redis"`
-	JWT             JWTConf             `yaml:"jwt"`
-	CORS            CORSConf            `yaml:"cors"`
-	Session         SessionConf         `yaml:"session"`
-	RateLimit       []RateLimitConf     `yaml:"rate_limit"`
-	Logger          LoggerConf          `yaml:"logger"`
-	LoginProtection LoginProtectionConf `yaml:"login_protection"`
+	MySQL              MySQLConf              `yaml:"mysql"`
+	Redis              RedisConf              `yaml:"redis"`
+	JWT                JWTConf                `yaml:"jwt"`
+	CORS               CORSConf               `yaml:"cors"`
+	Session            SessionConf            `yaml:"session"`
+	RateLimit          []RateLimitConf        `yaml:"rate_limit"`
+	Logger             LoggerConf             `yaml:"logger"`
+	LoginProtection    LoginProtectionConf    `yaml:"login_protection"`
+	RegisterProtection RegisterProtectionConf `yaml:"register_protection"`
 }
 
 type LoginProtectionConf struct {
@@ -71,6 +76,10 @@ type LoginProtectionConf struct {
 	BlockMinDuration  int `yaml:"block_min_duration"`
 	BlockHourDuration int `yaml:"block_hour_duration"`
 	LevelDuration     int `yaml:"level_duration"`
+}
+
+type RegisterProtectionConf struct {
+	BlockMinutes int `yaml:"block_minutes"`
 }
 
 type MySQLConf struct {

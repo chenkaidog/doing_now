@@ -67,3 +67,8 @@ login_protection:
   block_min_duration: 5
   block_hour_duration: 12
   level_duration: 1800
+
+register_protection:
+  block_minutes: 10
+
+logger:

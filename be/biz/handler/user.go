@@ -30,7 +30,7 @@ func Register(ctx context.Context, c *app.RequestContext) {
 	var req dto.RegisterReq
 	if err := c.BindAndValidate(&req); err != nil {
 		hlog.CtxInfof(ctx, "BindAndValidate err: %v", err)
-		resp.AbortWithErr(c, errs.ParamError, http.StatusBadRequest)
+		resp.AbortWithErr(c, errs.ParamError.SetMsg(err.Error()), http.StatusBadRequest)
 		return
 	}
 
@@ -58,7 +58,7 @@ func Login(ctx context.Context, c *app.RequestContext) {
 	var req dto.LoginReq
 	if err := c.BindAndValidate(&req); err != nil {
 		hlog.CtxInfof(ctx, "BindAndValidate err: %v", err)
-		resp.AbortWithErr(c, errs.ParamError, http.StatusBadRequest)
+		resp.AbortWithErr(c, errs.ParamError.SetMsg(err.Error()), http.StatusBadRequest)
 		return
 	}
 

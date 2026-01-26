@@ -1,0 +1,121 @@
+@host = http://127.0.0.1:8000
+@contentType = application/json
+@account = rest_client_user_01
+@password = rest_pass_123
+
+### 1. Ping Service
+GET {{host}}/ping
+
+### 2. Register User
+# @name register
+POST {{host}}/api/v1/user/register
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "name": "REST Client User",
+    "password": "{{password}}"
+}
+
+### 3. Register Duplicate User (Should Fail)
+POST {{host}}/api/v1/user/register
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "name": "Duplicate User",
+    "password": "{{password}}"
+}
+
+### 3.1 Register Param Error (Missing Password)
+POST {{host}}/api/v1/user/register
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "name": "No Pass User"
+}
+
+### 4. Login (Success)
+# @name login
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "password": "{{password}}"
+}
+
+###
+@accessToken = {{login.response.body.data.access_token}}
+
+### 5. Get User Info (Authorized)
+GET {{host}}/api/v1/user/info
+Authorization: {{accessToken}}
+
+### 6. Get User Info (Unauthorized - No Token)
+GET {{host}}/api/v1/user/info
+
+### 7. Get User Info (Unauthorized - Invalid Token)
+GET {{host}}/api/v1/user/info
+Authorization: invalid_token_string
+
+### 8. Refresh Token
+# @name refresh
+POST {{host}}/api/v1/user/refresh_token
+Content-Type: {{contentType}}
+
+{}
+
+@newAccessToken = {{refresh.response.body.data.access_token}}
+
+### 9. Get User Info (With New Token)
+GET {{host}}/api/v1/user/info
+Authorization: {{newAccessToken}}
+
+### 10. Login Failure (Wrong Password 1)
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "password": "wrong_password"
+}
+
+### 11. Login Failure (Wrong Password 2)
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "password": "wrong_password"
+}
+
+### 12. Login Failure (Wrong Password 3 - May trigger block)
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "password": "wrong_password"
+}
+
+### 13. Login Failure (Should be blocked 403)
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "password": "wrong_password"
+}
+
+### 14. Logout
+POST {{host}}/api/v1/user/logout
+Content-Type: {{contentType}}
+Authorization: {{newAccessToken}}
+
+{}
+
+### 15. Get User Info (After Logout - Should Fail)
+GET {{host}}/api/v1/user/info
+Authorization: {{newAccessToken}}
