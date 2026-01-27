@@ -14,7 +14,7 @@ import (
 func setupTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
-	err = db.AutoMigrate(&storage.UserRecord{})
+	err = db.AutoMigrate(&storage.UserRecord{}, &storage.UserCredentialRecord{})
 	assert.NoError(t, err)
 	return db
 }
@@ -25,10 +25,8 @@ func TestUserRepository_Create(t *testing.T) {
 	ctx := context.Background()
 
 	u := &storage.UserRecord{
-		Account:      "test_account",
-		Name:         "test_name",
-		PasswordSalt: "salt",
-		PasswordHash: "hash",
+		Account: "test_account",
+		Name:    "test_name",
 	}
 
 	created, err := r.Create(ctx, u)
@@ -49,11 +47,9 @@ func TestUserRepository_FindByUserID(t *testing.T) {
 	ctx := context.Background()
 
 	u := &storage.UserRecord{
-		UserId:       "test_user_id",
-		Account:      "test_account",
-		Name:         "test_name",
-		PasswordSalt: "salt",
-		PasswordHash: "hash",
+		UserId:  "test_user_id",
+		Account: "test_account",
+		Name:    "test_name",
 	}
 	db.Create(u)
 
@@ -75,11 +71,9 @@ func TestUserRepository_FindByAccount(t *testing.T) {
 	ctx := context.Background()
 
 	u := &storage.UserRecord{
-		UserId:       "test_user_id",
-		Account:      "test_account",
-		Name:         "test_name",
-		PasswordSalt: "salt",
-		PasswordHash: "hash",
+		UserId:  "test_user_id",
+		Account: "test_account",
+		Name:    "test_name",
 	}
 	db.Create(u)
 
@@ -101,11 +95,9 @@ func TestUserRepository_Update(t *testing.T) {
 	ctx := context.Background()
 
 	u := &storage.UserRecord{
-		UserId:       "test_user_id",
-		Account:      "test_account",
-		Name:         "test_name",
-		PasswordSalt: "salt",
-		PasswordHash: "hash",
+		UserId:  "test_user_id",
+		Account: "test_account",
+		Name:    "test_name",
 	}
 	db.Create(u)
 
@@ -118,4 +110,50 @@ func TestUserRepository_Update(t *testing.T) {
 	err = db.First(&m, "user_id = ?", u.UserId).Error
 	assert.NoError(t, err)
 	assert.Equal(t, "updated_name", m.Name)
+}
+
+func TestUserCredentialRepository_Create(t *testing.T) {
+	db := setupTestDB(t)
+	r := NewUserCredentialRepository(db)
+	ctx := context.Background()
+
+	c := &storage.UserCredentialRecord{
+		UserId:            "test_user_id",
+		PasswordSalt:      "salt",
+		PasswordHash:      "hash",
+		CredentialVersion: 1,
+	}
+
+	err := r.Create(ctx, c)
+	assert.NoError(t, err)
+
+	// Verify in DB
+	var m storage.UserCredentialRecord
+	err = db.First(&m, "user_id = ?", c.UserId).Error
+	assert.NoError(t, err)
+	assert.Equal(t, c.PasswordHash, m.PasswordHash)
+}
+
+func TestUserCredentialRepository_FindByUserID(t *testing.T) {
+	db := setupTestDB(t)
+	r := NewUserCredentialRepository(db)
+	ctx := context.Background()
+
+	c := &storage.UserCredentialRecord{
+		UserId:       "test_user_id",
+		PasswordSalt: "salt",
+		PasswordHash: "hash",
+	}
+	db.Create(c)
+
+	// Test found
+	found, err := r.FindByUserID(ctx, "test_user_id")
+	assert.NoError(t, err)
+	assert.NotNil(t, found)
+	assert.Equal(t, c.UserId, found.UserId)
+
+	// Test not found
+	found, err = r.FindByUserID(ctx, "non_existent")
+	assert.NoError(t, err)
+	assert.Nil(t, found)
 }

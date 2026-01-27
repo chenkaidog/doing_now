@@ -7,6 +7,7 @@ import (
 	"doing_now/be/biz/util/id_gen"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type UserRepository struct {
@@ -39,9 +40,33 @@ func (r *UserRepository) FindByUserID(ctx context.Context, userID string) (*stor
 	return &m, nil
 }
 
+func (r *UserRepository) FindByUserIDLock(ctx context.Context, userID string) (*storage.UserRecord, error) {
+	var m storage.UserRecord
+	err := r.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).First(&m).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
+}
+
 func (r *UserRepository) FindByAccount(ctx context.Context, account string) (*storage.UserRecord, error) {
 	var m storage.UserRecord
 	err := r.db.WithContext(ctx).Where("account = ?", account).First(&m).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (r *UserRepository) FindByAccountLock(ctx context.Context, account string) (*storage.UserRecord, error) {
+	var m storage.UserRecord
+	err := r.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("account = ?", account).First(&m).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil

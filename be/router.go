@@ -5,7 +5,7 @@ package main
 import (
 	handler "doing_now/be/biz/handler"
 	"doing_now/be/biz/middleware/jwt"
-	"doing_now/be/biz/middleware/ratelimit"
+	"doing_now/be/biz/middleware/security"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 )
@@ -18,8 +18,8 @@ func customizedRegister(r *server.Hertz) {
 	{
 		user := api.Group("/user")
 		{
-			user.POST("/register", ratelimit.NewRegisterProtection(), handler.Register)
-			user.POST("/login", ratelimit.NewLoginProtection(), handler.Login)
+			user.POST("/register", security.NewRegisterProtection(), handler.Register)
+			user.POST("/login", security.NewLoginProtection(), handler.Login)
 			user.POST("/refresh_token", handler.RefreshToken)
 			loginUser := user.Group("/", jwt.ValidateMW())
 			{

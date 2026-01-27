@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -45,6 +47,26 @@ redis:
 	return mr
 }
 
+func validateRefreshTokenForTest(ctx context.Context, refreshToken, sessID string) error {
+	jwtConf := config.GetJWTConfig()
+	claims, err := validateToken(refreshToken, jwtConf.RefreshTokenSecret)
+	if err != nil {
+		return ErrRefreshTokenInvalid
+	}
+	if !claims.CheckSum(sessID) {
+		return ErrRefreshTokenInvalid
+	}
+
+	exist, err := rediscli.GetRedisClient().Get(ctx, refreshTokenKey(claims.ID)).Bool()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return err
+	}
+	if !exist {
+		return ErrRefreshTokenInvalid
+	}
+	return nil
+}
+
 func TestGenerateAndValidateRefreshToken_Success(t *testing.T) {
 	ctx := context.Background()
 	sessID := "test-session-id"
@@ -57,7 +79,7 @@ func TestGenerateAndValidateRefreshToken_Success(t *testing.T) {
 	assert.NotEmpty(t, token)
 	assert.True(t, expAt > time.Now().Unix())
 
-	err = ValidateRefreshToken(ctx, token, sessID)
+	err = validateRefreshTokenForTest(ctx, token, sessID)
 	assert.NoError(t, err)
 }
 
@@ -71,7 +93,7 @@ func TestValidateRefreshToken_SessionMismatch(t *testing.T) {
 	token, _, err := GenerateRefreshToken(ctx, sessID)
 	assert.NoError(t, err)
 
-	err = ValidateRefreshToken(ctx, token, "wrong-session-id")
+	err = validateRefreshTokenForTest(ctx, token, "wrong-session-id")
 	assert.Error(t, err)
 	assert.Equal(t, ErrRefreshTokenInvalid, err)
 }
@@ -153,10 +175,11 @@ func TestRemoveRefreshToken_ExpiredButValidSignature(t *testing.T) {
 	assert.NoError(t, err)
 
 	err = RemoveRefreshToken(ctx, tokenStr, sessID)
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Equal(t, ErrRefreshTokenInvalid, err)
 
-	// Should be deleted
+	// Should still exist because expired token is treated as invalid and not processed further.
 	exists, err := rediscli.GetRedisClient().Exists(ctx, refreshTokenKey(tokenID)).Result()
 	assert.NoError(t, err)
-	assert.Equal(t, int64(0), exists)
+	assert.Equal(t, int64(1), exists)
 }

@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"doing_now/be/biz/config"
+	"doing_now/be/biz/util/interceptor"
 	"doing_now/be/biz/model/dto"
 	"doing_now/be/biz/model/errs"
 	"fmt"
@@ -14,7 +15,7 @@ import (
 )
 
 type rule struct {
-	interceptor *Interceptor
+	interceptor *interceptor.Interceptor
 	hasSession  bool
 }
 
@@ -26,7 +27,7 @@ func New() app.HandlerFunc {
 	for _, conf := range confList {
 		if conf.Path != "" && conf.WindowSeconds > 0 && conf.Limit > 0 {
 			rules[conf.Path] = &rule{
-				interceptor: NewInterceptor(conf.WindowSeconds, conf.Limit),
+				interceptor: interceptor.NewInterceptor(conf.WindowSeconds, conf.Limit),
 				hasSession:  conf.HasSession,
 			}
 		}
@@ -34,7 +35,7 @@ func New() app.HandlerFunc {
 
 	// Default rule: window=1, limit=2, has_session=false
 	defaultRule := &rule{
-		interceptor: NewInterceptor(1, 2),
+		interceptor: interceptor.NewInterceptor(1, 2),
 		hasSession:  false,
 	}
 

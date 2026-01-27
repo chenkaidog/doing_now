@@ -175,7 +175,9 @@ func TestRegister_SuccessAndBizError(t *testing.T) {
 	defer patchReg.UnPatch()
 
 	body := `{"account":"acc","name":"name","password":"pwd"}`
-	w := perform(h, http.MethodPost, "/api/v1/user/register", body)
+	w := perform(h, http.MethodPost, "/api/v1/user/register", body,
+		ut.Header{Key: "X-Forwarded-For", Value: "1.1.1.1"},
+	)
 	resp := w.Result()
 	assert.DeepEqual(t, http.StatusOK, resp.StatusCode())
 
@@ -196,7 +198,9 @@ func TestRegister_SuccessAndBizError(t *testing.T) {
 		Build()
 	defer patchReg.UnPatch()
 
-	w2 := perform(h, http.MethodPost, "/api/v1/user/register", body)
+	w2 := perform(h, http.MethodPost, "/api/v1/user/register", body,
+		ut.Header{Key: "X-Forwarded-For", Value: "2.2.2.2"},
+	)
 	resp2 := w2.Result()
 	assert.DeepEqual(t, http.StatusOK, resp2.StatusCode())
 

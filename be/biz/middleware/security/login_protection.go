@@ -1,4 +1,4 @@
-package ratelimit
+package security
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"doing_now/be/biz/db/redis"
 	"doing_now/be/biz/model/dto"
 	"doing_now/be/biz/model/errs"
+	"doing_now/be/biz/util/interceptor"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -55,7 +56,7 @@ func NewLoginProtection() app.HandlerFunc {
 
 	// Limit is set to limit-1 because Interceptor denies when current > limit.
 	// We want to trigger block on the Nth failure (current=N).
-	failInterceptor := NewInterceptor(window, int64(limit-1))
+	failInterceptor := interceptor.NewInterceptor(window, int64(limit-1))
 
 	return func(ctx context.Context, c *app.RequestContext) {
 		// Use Client IP as key

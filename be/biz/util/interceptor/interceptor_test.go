@@ -1,4 +1,4 @@
-package ratelimit
+package interceptor
 
 import (
 	"context"
