@@ -14,11 +14,9 @@ func UserDomainToRecord(u *domain.User) *storage.UserRecord {
 			CreatedAt: u.CreatedAt,
 			UpdatedAt: u.UpdatedAt,
 		},
-		UserId:       u.UserID,
-		Account:      u.Account,
-		Name:         u.Name,
-		PasswordSalt: u.PasswordSalt,
-		PasswordHash: u.PasswordHash,
+		UserId:  u.UserID,
+		Account: u.Account,
+		Name:    u.Name,
 	}
 }
 
@@ -27,12 +25,10 @@ func UserRecordToDomain(m *storage.UserRecord) *domain.User {
 		return nil
 	}
 	return &domain.User{
-		UserID:       m.UserId,
-		Account:      m.Account,
-		Name:         m.Name,
-		PasswordSalt: m.PasswordSalt,
-		PasswordHash: m.PasswordHash,
-		CreatedAt:    m.CreatedAt,
-		UpdatedAt:    m.UpdatedAt,
+		UserID:    m.UserId,
+		Account:   m.Account,
+		Name:      m.Name,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
 	}
 }

@@ -25,6 +25,8 @@ func customizedRegister(r *server.Hertz) {
 			{
 				loginUser.POST("/logout", handler.Logout)
 				loginUser.GET("/info", handler.GetUserInfo)
+				loginUser.POST("/update_info", handler.UpdateInfo)
+				loginUser.POST("/update_password", handler.UpdatePassword)
 			}
 		}
 	}

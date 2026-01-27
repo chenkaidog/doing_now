@@ -3,41 +3,31 @@ package repo
 import (
 	"context"
 
-	"doing_now/be/biz/model/convert"
-	"doing_now/be/biz/model/domain"
 	"doing_now/be/biz/model/storage"
 	"doing_now/be/biz/util/id_gen"
 
 	"gorm.io/gorm"
 )
 
-type UserRepository interface {
-	Create(ctx context.Context, u *domain.User) (*domain.User, error)
-	FindByUserID(ctx context.Context, userID string) (*domain.User, error)
-	FindByAccount(ctx context.Context, account string) (*domain.User, error)
-	FindByID(ctx context.Context, id uint64) (*domain.User, error)
-}
-
-type UserRepositoryGorm struct {
+type UserRepository struct {
 	db *gorm.DB
 }
 
-func NewUserRepositoryGorm(db *gorm.DB) *UserRepositoryGorm {
-	return &UserRepositoryGorm{db: db}
+func NewUserRepository(db *gorm.DB) *UserRepository {
+	return &UserRepository{db: db}
 }
 
-func (r *UserRepositoryGorm) Create(ctx context.Context, u *domain.User) (*domain.User, error) {
-	m := convert.UserDomainToRecord(u)
-	if m.UserId == "" {
-		m.UserId = id_gen.NewID()
+func (r *UserRepository) Create(ctx context.Context, u *storage.UserRecord) (*storage.UserRecord, error) {
+	if u.UserId == "" {
+		u.UserId = id_gen.NewID()
 	}
-	if err := r.db.WithContext(ctx).Create(m).Error; err != nil {
+	if err := r.db.WithContext(ctx).Create(u).Error; err != nil {
 		return nil, err
 	}
-	return convert.UserRecordToDomain(m), nil
+	return u, nil
 }
 
-func (r *UserRepositoryGorm) FindByUserID(ctx context.Context, userID string) (*domain.User, error) {
+func (r *UserRepository) FindByUserID(ctx context.Context, userID string) (*storage.UserRecord, error) {
 	var m storage.UserRecord
 	err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&m).Error
 	if err != nil {
@@ -46,10 +36,10 @@ func (r *UserRepositoryGorm) FindByUserID(ctx context.Context, userID string) (*
 		}
 		return nil, err
 	}
-	return convert.UserRecordToDomain(&m), nil
+	return &m, nil
 }
 
-func (r *UserRepositoryGorm) FindByAccount(ctx context.Context, account string) (*domain.User, error) {
+func (r *UserRepository) FindByAccount(ctx context.Context, account string) (*storage.UserRecord, error) {
 	var m storage.UserRecord
 	err := r.db.WithContext(ctx).Where("account = ?", account).First(&m).Error
 	if err != nil {
@@ -58,10 +48,10 @@ func (r *UserRepositoryGorm) FindByAccount(ctx context.Context, account string) 
 		}
 		return nil, err
 	}
-	return convert.UserRecordToDomain(&m), nil
+	return &m, nil
 }
 
-func (r *UserRepositoryGorm) FindByID(ctx context.Context, id uint64) (*domain.User, error) {
+func (r *UserRepository) FindByID(ctx context.Context, id uint64) (*storage.UserRecord, error) {
 	var m storage.UserRecord
 	err := r.db.WithContext(ctx).Where("id = ?", id).First(&m).Error
 	if err != nil {
@@ -70,5 +60,9 @@ func (r *UserRepositoryGorm) FindByID(ctx context.Context, id uint64) (*domain.U
 		}
 		return nil, err
 	}
-	return convert.UserRecordToDomain(&m), nil
+	return &m, nil
+}
+
+func (r *UserRepository) Update(ctx context.Context, u *storage.UserRecord) error {
+	return r.db.WithContext(ctx).Save(u).Error
 }

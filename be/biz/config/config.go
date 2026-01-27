@@ -83,11 +83,13 @@ type RegisterProtectionConf struct {
 }
 
 type MySQLConf struct {
-	DBName   string `yaml:"db_name"`
-	IP       string `yaml:"ip"`
-	Port     int    `yaml:"port"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	DBName        string `yaml:"db_name"`
+	IP            string `yaml:"ip"`
+	Port          int    `yaml:"port"`
+	Username      string `yaml:"username"`
+	Password      string `yaml:"password"`
+	SlowThreshold int    `yaml:"slow_threshold"` // ms
+	LogLevel      int    `yaml:"log_level"`      // 1:Silent, 2:Error, 3:Warn, 4:Info
 }
 
 type RedisConf struct {

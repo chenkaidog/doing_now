@@ -36,7 +36,7 @@ func (*loggerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		if err != nil && !errors.Is(err, redis.Nil) {
 			hlog.CtxErrorf(ctx, "go-redis command fail: %s, errs: %s, cost: %.3fms", strconv.Quote(cmd.String()), err.Error(), costTime)
 		} else {
-			hlog.CtxInfof(ctx, "redis command: %s, cost: %.3fms", strconv.Quote(cmd.String()), costTime)
+			hlog.CtxDebugf(ctx, "redis command: %s, cost: %.3fms", strconv.Quote(cmd.String()), costTime)
 		}
 
 		return err
@@ -59,7 +59,7 @@ func (*loggerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pro
 		if err != nil && !errors.Is(err, redis.Nil) {
 			hlog.CtxErrorf(ctx, "pipeline fail: \n%s\n, errs: %s, cost: %.3f", strings.Join(cmdAggregation, "\n"), err.Error(), costTime)
 		} else {
-			hlog.CtxInfof(ctx, "pipeline success: \n%s\n, cost: %.3f", strings.Join(cmdAggregation, "\n"), costTime)
+			hlog.CtxDebugf(ctx, "pipeline success: \n%s\n, cost: %.3f", strings.Join(cmdAggregation, "\n"), costTime)
 		}
 
 		return err

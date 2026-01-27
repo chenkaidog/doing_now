@@ -32,7 +32,7 @@ func ValidateMW() app.HandlerFunc {
 		jwtConf := config.GetJWTConfig()
 		jwtStr := exactJWT(c)
 		if jwtStr == "" {
-			hlog.CtxInfof(ctx, "authorization failed, token is empty")
+			hlog.CtxNoticef(ctx, "authorization failed, token is empty")
 			resp.AbortWithErr(c, errs.Unauthorized, http.StatusUnauthorized)
 			return
 		}
@@ -40,15 +40,15 @@ func ValidateMW() app.HandlerFunc {
 		// 0. basic validation
 		claims, err := validateToken(jwtStr, jwtConf.AccessTokenSecret)
 		if err != nil {
-			hlog.CtxInfof(ctx, "jwt invalid: %v", err)
-			resp.AbortWithErr(c, errs.Unauthorized, http.StatusUnauthorized)
+			hlog.CtxNoticef(ctx, "jwt invalid: %v", err)
+			resp.AbortWithErr(c, errs.Unauthorized.SetErr(err), http.StatusUnauthorized)
 			return
 		}
 
 		// 1. check the summary of session id
 		sess := sessions.Default(c)
 		if !claims.CheckSum(sess.ID()) {
-			hlog.CtxInfof(ctx, "session not match")
+			hlog.CtxNoticef(ctx, "session not match")
 			resp.AbortWithErr(c, errs.Unauthorized, http.StatusUnauthorized)
 			return
 		}
@@ -60,7 +60,7 @@ func ValidateMW() app.HandlerFunc {
 			resp.AbortWithErr(c, errs.ServerError, http.StatusInternalServerError)
 			return
 		} else if !exist {
-			hlog.CtxInfof(ctx, "jwt token invalid or expired")
+			hlog.CtxNoticef(ctx, "jwt token invalid or expired")
 			resp.AbortWithErr(c, errs.Unauthorized, http.StatusUnauthorized)
 			return
 		}
@@ -121,9 +121,20 @@ func GetPayload(ctx context.Context) Payload {
 func RemoveToken(ctx context.Context, sessID string) error {
 	if claims, ok := ctx.Value(Payload{}).(*Claims); ok {
 		if !claims.CheckSum(sessID) {
-			return nil
+			return ErrJwtInvalid
 		}
-		return rediscli.GetRedisClient().Del(ctx, tokenExistKey(claims.ID)).Err()
+
+		timeLeft := time.Until(claims.ExpiresAt.Time)
+		if timeLeft < 0 {
+			return rediscli.GetRedisClient().Del(ctx, tokenExistKey(claims.ID)).Err()
+		}
+
+		newTTL := TokenRemovalTTL
+		if timeLeft < newTTL {
+			newTTL = timeLeft
+		}
+
+		return rediscli.GetRedisClient().Expire(ctx, tokenExistKey(claims.ID), newTTL).Err()
 	}
 
 	return nil

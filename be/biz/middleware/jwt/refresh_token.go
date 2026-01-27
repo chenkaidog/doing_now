@@ -11,11 +11,11 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
+const TokenRemovalTTL = time.Minute
 const refreshTokenCookieName = "refresh_token"
 
 func GenerateRefreshToken(ctx context.Context, sessID string) (string, int64, error) {
@@ -39,7 +39,8 @@ func GenerateRefreshToken(ctx context.Context, sessID string) (string, int64, er
 	return refreshToken, expAt, nil
 }
 
-func ValidateRefreshToken(ctx context.Context, refreshToken, sessID string) error {
+func RemoveRefreshToken(ctx context.Context, refreshToken, sessID string) error {
+	// 先校验token的有效性
 	jwtConf := config.GetJWTConfig()
 	claims, err := validateToken(refreshToken, jwtConf.RefreshTokenSecret)
 	if err != nil {
@@ -60,48 +61,18 @@ func ValidateRefreshToken(ctx context.Context, refreshToken, sessID string) erro
 		return ErrRefreshTokenInvalid
 	}
 
-	return nil
-}
-
-func RemoveRefreshToken(ctx context.Context, refreshToken, sessID string) error {
-	if refreshToken == "" {
-		return nil
+	// 校验通过后，删除redis中的token
+	timeLeft := time.Until(claims.ExpiresAt.Time)
+	if timeLeft < 0 {
+		return rediscli.GetRedisClient().Del(ctx, refreshTokenKey(claims.ID)).Err()
 	}
 
-	jwtConf := config.GetJWTConfig()
-	var claims Claims
-	token, err := jwt.ParseWithClaims(refreshToken, &claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, jwt.ErrHashUnavailable
-		}
-		return []byte(jwtConf.RefreshTokenSecret), nil
-	})
-
-	if err != nil {
-		if !errors.Is(err, jwt.ErrTokenExpired) {
-			hlog.CtxErrorf(ctx, "validate refresh token err: %v", err)
-			return nil
-		}
-		// expired token is allowed for removal, if signature is valid
-		// jwt.ParseWithClaims returns claims even if expired
+	newTTL := TokenRemovalTTL
+	if timeLeft < newTTL {
+		newTTL = timeLeft
 	}
 
-	// Double check validity if not expired, or just signature check.
-	// ParseWithClaims checks signature. If signature is invalid, it returns error distinct from ErrTokenExpired (usually).
-	// If it returns ErrTokenExpired, signature is valid.
-	// But let's verify token.Valid is true OR error is ONLY expired.
-
-	if !token.Valid && !errors.Is(err, jwt.ErrTokenExpired) {
-		hlog.CtxInfof(ctx, "token invalid and not just expired")
-		return nil
-	}
-
-	if !claims.CheckSum(sessID) {
-		hlog.CtxInfof(ctx, "refresh token checksum failed during removal")
-		return nil
-	}
-
-	return rediscli.GetRedisClient().Del(ctx, refreshTokenKey(claims.ID)).Err()
+	return rediscli.GetRedisClient().Expire(ctx, refreshTokenKey(claims.ID), newTTL).Err()
 }
 
 func GetRefreshTokenFromCookie(c *app.RequestContext) string {

@@ -32,8 +32,8 @@ func Init() {
 		&gorm.Config{
 			SkipDefaultTransaction: true,
 			Logger: &GormLogger{
-				SlowThreshold: 2 * time.Second,
-				LogLevel:      logger.Info,
+				SlowThreshold: time.Duration(config.GetMySQLConf().SlowThreshold) * time.Millisecond,
+				LogLevel:      logger.LogLevel(config.GetMySQLConf().LogLevel),
 			},
 		})
 	if err != nil {

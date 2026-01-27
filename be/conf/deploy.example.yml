@@ -4,6 +4,8 @@ mysql:
   port: 3306
   username: ""
   password: ""
+  slow_threshold: 2 # s
+  log_level: 4 # 1:Silent, 2:Error, 3:Warn, 4:Info
 
 redis:
   ip: "127.0.0.1"

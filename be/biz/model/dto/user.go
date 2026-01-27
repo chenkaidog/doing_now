@@ -43,3 +43,16 @@ type GetUserInfoResp struct {
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
 }
+
+type UpdateInfoReq struct {
+	Name string `json:"name" validate:"required,max=64"`
+}
+
+type UpdateInfoResp struct{}
+
+type UpdatePasswordReq struct {
+	OldPassword string `json:"old_password" validate:"required,max=128"`
+	NewPassword string `json:"new_password" validate:"required,max=128"`
+}
+
+type UpdatePasswordResp struct{}

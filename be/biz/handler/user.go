@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"doing_now/be/biz/middleware/jwt"
@@ -29,7 +30,7 @@ import (
 func Register(ctx context.Context, c *app.RequestContext) {
 	var req dto.RegisterReq
 	if err := c.BindAndValidate(&req); err != nil {
-		hlog.CtxInfof(ctx, "BindAndValidate err: %v", err)
+		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
 		resp.AbortWithErr(c, errs.ParamError.SetMsg(err.Error()), http.StatusBadRequest)
 		return
 	}
@@ -57,7 +58,7 @@ func Register(ctx context.Context, c *app.RequestContext) {
 func Login(ctx context.Context, c *app.RequestContext) {
 	var req dto.LoginReq
 	if err := c.BindAndValidate(&req); err != nil {
-		hlog.CtxInfof(ctx, "BindAndValidate err: %v", err)
+		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
 		resp.AbortWithErr(c, errs.ParamError.SetMsg(err.Error()), http.StatusBadRequest)
 		return
 	}
@@ -116,7 +117,7 @@ func Login(ctx context.Context, c *app.RequestContext) {
 func RefreshToken(ctx context.Context, c *app.RequestContext) {
 	var req dto.RefreshTokenReq
 	if err := c.BindAndValidate(&req); err != nil {
-		hlog.CtxInfof(ctx, "BindAndValidate err: %v", err)
+		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
 		resp.AbortWithErr(c, errs.ParamError, http.StatusBadRequest)
 		return
 	}
@@ -124,51 +125,54 @@ func RefreshToken(ctx context.Context, c *app.RequestContext) {
 	sess := sessions.Default(c)
 	sessID := sess.ID()
 	if sessID == "" {
-		hlog.CtxInfof(ctx, "sessID is empty")
+		hlog.CtxNoticef(ctx, "sessID is empty")
 		resp.FailResp(c, errs.Unauthorized)
 		return
 	}
 
 	refreshToken := jwt.GetRefreshTokenFromCookie(c)
 	if refreshToken == "" {
-		hlog.CtxInfof(ctx, "refreshToken is empty")
+		hlog.CtxNoticef(ctx, "refreshToken is empty")
 		resp.FailResp(c, errs.Unauthorized)
 		return
 	}
 
-	if err := jwt.ValidateRefreshToken(ctx, refreshToken, sessID); err != nil {
-		hlog.CtxInfof(ctx, "ValidateRefreshToken err: %v", err)
-		resp.FailResp(c, errs.Unauthorized)
+	if err := jwt.RemoveRefreshToken(ctx, refreshToken, sessID); err != nil {
+		if errors.Is(err, jwt.ErrRefreshTokenInvalid) {
+			resp.FailResp(c, errs.Unauthorized.SetErr(err))
+			return
+		}
+		hlog.CtxErrorf(ctx, "RemoveRefreshToken err: %v", err)
+		resp.FailResp(c, errs.ServerError.SetErr(err))
 		return
 	}
 
 	userID, _ := sess.Get("user_id").(string)
 	account, _ := sess.Get("account").(string)
 	if userID == "" || account == "" {
+		hlog.CtxNoticef(ctx, "userID or account is empty")
 		resp.FailResp(c, errs.Unauthorized)
 		return
 	}
 
-	payload := jwt.Payload{
-		UserID:  userID,
-		Account: account,
-	}
-
-	newAccessToken, accessExpAt, accessErr := jwt.GenerateToken(ctx, payload, sessID)
+	newAccessToken, accessExpAt, accessErr := jwt.GenerateToken(ctx,
+		jwt.Payload{
+			UserID:  userID,
+			Account: account,
+		}, sessID)
 	if accessErr != nil {
+		hlog.CtxErrorf(ctx, "GenerateToken err: %v", accessErr)
 		resp.FailResp(c, errs.ServerError.SetErr(accessErr))
 		return
 	}
 
 	newRefreshToken, refreshExpAt, refreshErr := jwt.GenerateRefreshToken(ctx, sessID)
 	if refreshErr != nil {
+		hlog.CtxErrorf(ctx, "GenerateRefreshToken err: %v", refreshErr)
 		resp.FailResp(c, errs.ServerError.SetErr(refreshErr))
 		return
 	}
 	jwt.SetRefreshTokenCookie(c, newRefreshToken, refreshExpAt)
-	if err := jwt.RemoveRefreshToken(ctx, refreshToken, sessID); err != nil {
-		hlog.CtxErrorf(ctx, "RemoveRefreshToken err: %v", err)
-	}
 
 	resp.SuccessResp(c, dto.RefreshTokenResp{
 		AccessToken:      newAccessToken,
@@ -193,12 +197,11 @@ func RefreshToken(ctx context.Context, c *app.RequestContext) {
 func Logout(ctx context.Context, c *app.RequestContext) {
 	var req dto.LogoutReq
 	if err := c.BindAndValidate(&req); err != nil {
-		hlog.CtxInfof(ctx, "Logout BindAndValidate err: %v", err)
+		hlog.CtxNoticef(ctx, "Logout BindAndValidate err: %v", err)
 		resp.AbortWithErr(c, errs.ParamError, http.StatusBadRequest)
 		return
 	}
 
-	// 不需要处理异常，直接忽略
 	sess := sessions.Default(c)
 	sessID := sess.ID()
 	if err := jwt.RemoveToken(ctx, sessID); err != nil {
@@ -232,7 +235,7 @@ func Logout(ctx context.Context, c *app.RequestContext) {
 func GetUserInfo(ctx context.Context, c *app.RequestContext) {
 	var req dto.GetUserInfoReq
 	if err := c.BindAndValidate(&req); err != nil {
-		hlog.CtxInfof(ctx, "BindAndValidate err: %v", err)
+		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
 		resp.AbortWithErr(c, errs.ParamError, http.StatusBadRequest)
 		return
 	}
@@ -256,4 +259,70 @@ func GetUserInfo(ctx context.Context, c *app.RequestContext) {
 		CreatedAt: u.CreatedAt.Unix(),
 		UpdatedAt: u.UpdatedAt.Unix(),
 	})
+}
+
+// UpdateInfo 更新用户信息接口
+//
+//	@Tags			user
+//	@Summary		更新用户信息接口
+//	@Description	更新用户信息接口
+//	@Accept			json
+//	@Produce		json
+//	@Param			req				body		dto.UpdateInfoReq	true	"update info request body"
+//	@Param			Authorization	header		string				true	"jwt"
+//	@Success		200				{object}	dto.CommonResp{data=dto.UpdateInfoResp}
+//	@Router			/api/v1/user/update_info [POST]
+func UpdateInfo(ctx context.Context, c *app.RequestContext) {
+	var req dto.UpdateInfoReq
+	if err := c.BindAndValidate(&req); err != nil {
+		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
+		resp.AbortWithErr(c, errs.ParamError, http.StatusBadRequest)
+		return
+	}
+
+	payload := jwt.GetPayload(ctx)
+	if payload.UserID == "" {
+		resp.FailResp(c, errs.Unauthorized)
+		return
+	}
+
+	if err := user.NewDefault().UpdateInfo(ctx, payload.UserID, req.Name); err != nil {
+		resp.FailResp(c, err)
+		return
+	}
+
+	resp.SuccessResp(c, dto.UpdateInfoResp{})
+}
+
+// UpdatePassword 更新密码接口
+//
+//	@Tags			user
+//	@Summary		更新密码接口
+//	@Description	更新密码接口
+//	@Accept			json
+//	@Produce		json
+//	@Param			req				body		dto.UpdatePasswordReq	true	"update password request body"
+//	@Param			Authorization	header		string					true	"jwt"
+//	@Success		200				{object}	dto.CommonResp{data=dto.UpdatePasswordResp}
+//	@Router			/api/v1/user/update_password [POST]
+func UpdatePassword(ctx context.Context, c *app.RequestContext) {
+	var req dto.UpdatePasswordReq
+	if err := c.BindAndValidate(&req); err != nil {
+		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
+		resp.AbortWithErr(c, errs.ParamError, http.StatusBadRequest)
+		return
+	}
+
+	payload := jwt.GetPayload(ctx)
+	if payload.UserID == "" {
+		resp.FailResp(c, errs.Unauthorized)
+		return
+	}
+
+	if err := user.NewDefault().UpdatePassword(ctx, payload.UserID, req.OldPassword, req.NewPassword); err != nil {
+		resp.FailResp(c, err)
+		return
+	}
+
+	resp.SuccessResp(c, dto.UpdatePasswordResp{})
 }
