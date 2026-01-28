@@ -2,7 +2,6 @@ package jwt
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -16,7 +15,6 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -47,26 +45,6 @@ redis:
 	return mr
 }
 
-func validateRefreshTokenForTest(ctx context.Context, refreshToken, sessID string) error {
-	jwtConf := config.GetJWTConfig()
-	claims, err := validateToken(refreshToken, jwtConf.RefreshTokenSecret)
-	if err != nil {
-		return ErrRefreshTokenInvalid
-	}
-	if !claims.CheckSum(sessID) {
-		return ErrRefreshTokenInvalid
-	}
-
-	exist, err := rediscli.GetRedisClient().Get(ctx, refreshTokenKey(claims.ID)).Bool()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return err
-	}
-	if !exist {
-		return ErrRefreshTokenInvalid
-	}
-	return nil
-}
-
 func TestGenerateAndValidateRefreshToken_Success(t *testing.T) {
 	ctx := context.Background()
 	sessID := "test-session-id"
@@ -79,8 +57,14 @@ func TestGenerateAndValidateRefreshToken_Success(t *testing.T) {
 	assert.NotEmpty(t, token)
 	assert.True(t, expAt > time.Now().Unix())
 
-	err = validateRefreshTokenForTest(ctx, token, sessID)
+	jwtConf := config.GetJWTConfig()
+	claims, err := validateToken(token, jwtConf.RefreshTokenSecret)
 	assert.NoError(t, err)
+	assert.True(t, claims.CheckSum(sessID))
+
+	exist, err := rediscli.GetRedisClient().Get(ctx, refreshTokenKey(claims.ID)).Bool()
+	assert.NoError(t, err)
+	assert.True(t, exist)
 }
 
 func TestValidateRefreshToken_SessionMismatch(t *testing.T) {
@@ -93,7 +77,7 @@ func TestValidateRefreshToken_SessionMismatch(t *testing.T) {
 	token, _, err := GenerateRefreshToken(ctx, sessID)
 	assert.NoError(t, err)
 
-	err = validateRefreshTokenForTest(ctx, token, "wrong-session-id")
+	err = RemoveRefreshToken(ctx, token, "wrong-session-id")
 	assert.Error(t, err)
 	assert.Equal(t, ErrRefreshTokenInvalid, err)
 }
@@ -141,12 +125,7 @@ func TestRemoveRefreshToken_TTLUpdate(t *testing.T) {
 	assert.Equal(t, int64(1), exists)
 }
 
-func TestRemoveRefreshToken_ExpiredButValidSignature(t *testing.T) {
-	// This test might be tricky if we can't easily generate an expired token that passes signature check
-	// but RemoveRefreshToken checks expiration first.
-	// Actually, if it's expired, RemoveRefreshToken deletes it immediately.
-	// We can simulate this.
-
+func TestRemoveRefreshToken_ExpiredTokenShouldReturnInvalid(t *testing.T) {
 	ctx := context.Background()
 	sessID := "test-session-id"
 	mr := initTestConfig()
@@ -178,7 +157,7 @@ func TestRemoveRefreshToken_ExpiredButValidSignature(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, ErrRefreshTokenInvalid, err)
 
-	// Should still exist because expired token is treated as invalid and not processed further.
+	// Should remain (RemoveRefreshToken returns invalid before touching redis)
 	exists, err := rediscli.GetRedisClient().Exists(ctx, refreshTokenKey(tokenID)).Result()
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1), exists)

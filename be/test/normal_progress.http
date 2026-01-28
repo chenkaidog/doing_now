@@ -1,0 +1,88 @@
+@host = http://127.0.0.1:8000
+@contentType = application/json
+@account = testuser001
+@userName = Test User 001
+@password = password123
+@newPassword = newpassword123
+@updatedName = Updated User Name
+
+### 1. Ping Service
+GET {{host}}/ping
+
+### 2. normal progress
+### 2.1 register user
+# @name register
+POST {{host}}/api/v1/user/register
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "name": "{{userName}}",
+    "password": "{{password}}"
+}
+
+### 2.2 login user
+# @name login
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "password": "{{password}}"
+}
+
+### 2.3 refresh token
+# @name refreshToken
+POST {{host}}/api/v1/user/refresh_token
+Content-Type: {{contentType}}
+
+{}
+
+### 2.4 get user info
+@accessToken = {{refreshToken.response.body.data.access_token}}
+
+# @name getUserInfo
+GET {{host}}/api/v1/user/info
+Content-Type: {{contentType}}
+Authorization: {{accessToken}}
+
+### 2.5 update user name 
+POST {{host}}/api/v1/user/update_info
+Content-Type: {{contentType}}
+Authorization: {{accessToken}}
+
+{
+    "name": "{{updatedName}}"
+}
+
+### 2.6 update user password. Cause session expired
+POST {{host}}/api/v1/user/update_password
+Content-Type: {{contentType}}
+Authorization: {{accessToken}}
+
+{
+    "old_password": "{{password}}",
+    "new_password": "{{newPassword}}"
+}
+
+### 2.7 get user info after password update, fails (should be 401/403 or similar if token invalidated, but JWT might still be valid until expiry unless backend checks db version)
+GET {{host}}/api/v1/user/info
+Content-Type: {{contentType}}
+Authorization: {{accessToken}}
+
+### 2.8 login user with new password
+# @name loginNew
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+
+{
+    "account": "{{account}}",
+    "password": "{{newPassword}}"
+}
+
+### 2.9 get user info after login with new password
+@newAccessToken = {{loginNew.response.body.data.access_token}}
+
+GET {{host}}/api/v1/user/info
+Content-Type: {{contentType}}
+Authorization: {{newAccessToken}}

@@ -1,5 +1,6 @@
 # golang单测规范
-不要侵入代码改造，使用"github.com/bytedance/mockey"去mock下游方法的调用
+- 不要侵入代码改造，使用"github.com/bytedance/mockey"去mock下游方法的调用。
+- 修复单测的时候不要修改任何业务代码或者配置文件。
 
 # 日志等级规则
 - 异常来自系统内部，例如数据库异常、服务逻辑异常，使用Errorf

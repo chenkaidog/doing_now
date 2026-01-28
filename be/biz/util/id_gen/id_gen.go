@@ -22,11 +22,11 @@ var idgen *IDGenerator
 
 type IDGenerator struct {
 	pool <-chan string
-	stop chan interface{}
+	stop chan any
 }
 
 func NewIDGenerator(maxSize int) *IDGenerator {
-	stop := make(chan interface{})
+	stop := make(chan any)
 	idgen := &IDGenerator{
 		pool: newPool(maxSize, stop),
 		stop: stop,
@@ -47,7 +47,7 @@ func (idgen *IDGenerator) NewID() string {
 	return <-idgen.pool
 }
 
-func newPool(size int, stop chan interface{}) <-chan string {
+func newPool(size int, stop chan any) <-chan string {
 	pool := make(chan string, size)
 
 	go func() {

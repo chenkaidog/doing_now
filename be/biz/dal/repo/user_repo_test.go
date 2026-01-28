@@ -25,13 +25,14 @@ func TestUserRepository_Create(t *testing.T) {
 	ctx := context.Background()
 
 	u := &storage.UserRecord{
+		UserId:  "test_user_id",
 		Account: "test_account",
 		Name:    "test_name",
 	}
 
 	created, err := r.Create(ctx, u)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, created.UserId)
+	assert.Equal(t, u.UserId, created.UserId)
 	assert.Equal(t, u.Account, created.Account)
 
 	// Verify in DB

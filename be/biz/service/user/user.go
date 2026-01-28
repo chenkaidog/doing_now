@@ -13,6 +13,7 @@ import (
 	"doing_now/be/biz/util/random"
 
 	"github.com/cloudwego/hertz/pkg/common/hlog"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -42,6 +43,7 @@ func (s *Service) Register(ctx context.Context, account, name, password string) 
 		}
 
 		userRecord, err = users.Create(ctx, &storage.UserRecord{
+			UserId: uuid.New().String(),
 			Account: account,
 			Name:    name,
 		})
@@ -74,11 +76,10 @@ func (s *Service) Register(ctx context.Context, account, name, password string) 
 		return nil, errs.ServerError.SetErr(err)
 	}
 	userDomain := convert.UserRecordToDomain(userRecord)
-	userDomain.CredentialVersion = 0
 	return userDomain, nil
 }
 
-func (s *Service) Login(ctx context.Context, account, password string) (*domain.User, errs.Error) {
+func (s *Service) Login(ctx context.Context, account, password string) (*domain.User, uint, errs.Error) {
 	var userRecord *storage.UserRecord
 	var credentialVersion uint
 	err := mysql.GetDbConn().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -115,24 +116,24 @@ func (s *Service) Login(ctx context.Context, account, password string) (*domain.
 			return errs.PasswordIncorrect
 		}
 
+		credentialVersion = c.CredentialVersion
 		return nil
 	})
 
 	if err != nil {
 		if bizErr, ok := err.(errs.Error); ok {
 			hlog.CtxNoticef(ctx, "login user err: %v", bizErr)
-			return nil, bizErr
+			return nil, 0, bizErr
 		}
 		hlog.CtxErrorf(ctx, "login user err: %v", err)
-		return nil, errs.ServerError.SetErr(err)
+		return nil, 0, errs.ServerError.SetErr(err)
 	}
 	userDomain := convert.UserRecordToDomain(userRecord)
-	userDomain.CredentialVersion = credentialVersion
-	return userDomain, nil
+	return userDomain, credentialVersion, nil
 }
 
 func (s *Service) GetByUserID(ctx context.Context, userID string) (*domain.User, errs.Error) {
-	users := repo.NewUserRepository( mysql.GetDbConn().WithContext(ctx))
+	users := repo.NewUserRepository(mysql.GetDbConn().WithContext(ctx))
 	u, err := users.FindByUserID(ctx, userID)
 	if err != nil {
 		if bizErr, ok := err.(errs.Error); ok {

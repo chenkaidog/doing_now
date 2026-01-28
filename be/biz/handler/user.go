@@ -63,7 +63,7 @@ func Login(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	u, bizErr := user.NewDefault().Login(ctx, req.Account, req.Password)
+	u, credentialVersion, bizErr := user.NewDefault().Login(ctx, req.Account, req.Password)
 	if bizErr != nil {
 		resp.FailResp(c, bizErr)
 		return
@@ -72,8 +72,7 @@ func Login(ctx context.Context, c *app.RequestContext) {
 	sess := sessions.Default(c)
 	sess.Set("user_id", u.UserID)
 	sess.Set("account", u.Account)
-	sess.Set("name", u.Name)
-	sess.Set("credential_version", u.CredentialVersion)
+	sess.Set("credential_version", credentialVersion)
 	if err := sess.Save(); err != nil {
 		hlog.CtxErrorf(ctx, "sess.Save err: %v", err)
 		resp.AbortWithErr(c, errs.ServerError.SetErr(err), http.StatusInternalServerError)

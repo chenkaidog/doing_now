@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"doing_now/be/biz/model/storage"
-	"doing_now/be/biz/util/id_gen"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -19,9 +18,6 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 }
 
 func (r *UserRepository) Create(ctx context.Context, u *storage.UserRecord) (*storage.UserRecord, error) {
-	if u.UserId == "" {
-		u.UserId = id_gen.NewID()
-	}
 	if err := r.db.WithContext(ctx).Create(u).Error; err != nil {
 		return nil, err
 	}
