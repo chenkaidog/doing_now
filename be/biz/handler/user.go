@@ -73,6 +73,7 @@ func Login(ctx context.Context, c *app.RequestContext) {
 	sess.Set("user_id", u.UserID)
 	sess.Set("account", u.Account)
 	sess.Set("name", u.Name)
+	sess.Set("credential_version", u.CredentialVersion)
 	if err := sess.Save(); err != nil {
 		hlog.CtxErrorf(ctx, "sess.Save err: %v", err)
 		resp.AbortWithErr(c, errs.ServerError.SetErr(err), http.StatusInternalServerError)

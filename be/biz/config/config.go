@@ -76,6 +76,9 @@ type LoginProtectionConf struct {
 	BlockMinDuration  int `yaml:"block_min_duration"`
 	BlockHourDuration int `yaml:"block_hour_duration"`
 	LevelDuration     int `yaml:"level_duration"`
+	
+	SuccessWindowSeconds int `yaml:"success_window_seconds"`
+	SuccessLimit         int `yaml:"success_limit"`
 }
 
 type RegisterProtectionConf struct {

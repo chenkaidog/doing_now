@@ -73,11 +73,14 @@ func (s *Service) Register(ctx context.Context, account, name, password string) 
 		hlog.CtxErrorf(ctx, "register user err: %v", err)
 		return nil, errs.ServerError.SetErr(err)
 	}
-	return convert.UserRecordToDomain(userRecord), nil
+	userDomain := convert.UserRecordToDomain(userRecord)
+	userDomain.CredentialVersion = 0
+	return userDomain, nil
 }
 
 func (s *Service) Login(ctx context.Context, account, password string) (*domain.User, errs.Error) {
 	var userRecord *storage.UserRecord
+	var credentialVersion uint
 	err := mysql.GetDbConn().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		users := repo.NewUserRepository(tx)
 		credentials := repo.NewUserCredentialRepository(tx)
@@ -123,7 +126,9 @@ func (s *Service) Login(ctx context.Context, account, password string) (*domain.
 		hlog.CtxErrorf(ctx, "login user err: %v", err)
 		return nil, errs.ServerError.SetErr(err)
 	}
-	return convert.UserRecordToDomain(userRecord), nil
+	userDomain := convert.UserRecordToDomain(userRecord)
+	userDomain.CredentialVersion = credentialVersion
+	return userDomain, nil
 }
 
 func (s *Service) GetByUserID(ctx context.Context, userID string) (*domain.User, errs.Error) {
@@ -168,6 +173,19 @@ func (s *Service) UpdateInfo(ctx context.Context, userID, name string) errs.Erro
 		return errs.ServerError.SetErr(err)
 	}
 	return nil
+}
+
+func (s *Service) GetCredentialVersion(ctx context.Context, userID string) (uint, errs.Error) {
+	credentials := repo.NewUserCredentialRepository(mysql.GetDbConn().WithContext(ctx))
+	c, err := credentials.FindByUserID(ctx, userID)
+	if err != nil {
+		hlog.CtxErrorf(ctx, "find credential by user id err: %v", err)
+		return 0, errs.ServerError.SetErr(err)
+	}
+	if c == nil {
+		return 0, errs.UserNotExist
+	}
+	return c.CredentialVersion, nil
 }
 
 func (s *Service) UpdatePassword(ctx context.Context, userID, oldPassword, newPassword string) errs.Error {

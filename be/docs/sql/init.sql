@@ -1,3 +1,4 @@
+DROP TABLE IF EXISTS `users`;
 CREATE TABLE `users` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `created_at` datetime(3) DEFAULT NULL COMMENT '创建时间',
@@ -11,6 +12,7 @@ CREATE TABLE `users` (
   UNIQUE KEY `idx_users_account` (`account`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户表';
 
+DROP TABLE IF EXISTS `user_credentials`;
 CREATE TABLE `user_credentials` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `created_at` datetime(3) DEFAULT NULL COMMENT '创建时间',

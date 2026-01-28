@@ -15,7 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const TokenRemovalTTL = time.Minute
+const TokenRemovalTTL = time.Minute / 2
 const refreshTokenCookieName = "refresh_token"
 
 func GenerateRefreshToken(ctx context.Context, sessID string) (string, int64, error) {

@@ -57,3 +57,13 @@ func (i *Interceptor) Allow(ctx context.Context, key string) (bool, error) {
 	// Result is 1 (Allowed) or 0 (Denied)
 	return result.(int64) == 1, nil
 }
+
+// ReachLimit checks if the key has reached the limit without incrementing.
+func (i *Interceptor) ReachLimit(ctx context.Context, key string) bool {
+	redisKey := "rate_limit:" + key
+	count, err := redis.GetRedisClient().Get(ctx, redisKey).Int64()
+	if err != nil {
+		return false
+	}
+	return count >= i.limit
+}

@@ -143,3 +143,61 @@ func NewLoginProtection() app.HandlerFunc {
 		}
 	}
 }
+
+// NewLoginSuccessRecorder records successful logins per account
+func NewLoginSuccessRecorder() app.HandlerFunc {
+	conf := config.GetLoginProtectionConf()
+	window := conf.SuccessWindowSeconds
+	if window <= 0 {
+		window = 60 // Default 1 minute
+	}
+	limit := conf.SuccessLimit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	recorder := interceptor.NewInterceptor(window, int64(limit-1))
+
+	return func(ctx context.Context, c *app.RequestContext) {
+		// 通过body中的请求参数account进行前置校验，如果校验不通过，则不允许登录
+		var req dto.LoginReq
+		if err := c.BindAndValidate(&req); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, dto.CommonResp{
+				Code:    int(errs.ParamError.Code()),
+				Message: err.Error(),
+				Success: false,
+			})
+			return
+		}
+
+		// Pre-check: Check if account has exceeded success limit
+		// We use recorder.ReachLimit here to avoid incrementing
+		if recorder.ReachLimit(ctx, "login_success:"+req.Account) {
+			c.AbortWithStatusJSON(http.StatusForbidden, dto.CommonResp{
+				Code:    int(errs.LoginReachLimit.Code()),
+				Message: "Login limit reached, please try again later",
+				Success: false,
+			})
+			return
+		}
+
+		c.Next(ctx)
+
+		// Post-check: Only record on success
+		respBody := c.Response.Body()
+		var resp dto.CommonResp
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return
+		}
+
+		if !resp.Success {
+			return
+		}
+
+		// Record success，进行一次打点
+		_, err := recorder.Allow(ctx, "login_success:"+req.Account)
+		if err != nil {
+			hlog.CtxErrorf(ctx, "LoginSuccessRecorder error: %v", err)
+		}
+	}
+}

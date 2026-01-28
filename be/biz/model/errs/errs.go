@@ -65,6 +65,7 @@ var (
 	TooManyRequest  = New(1_0004, "too many request")
 	LoginReachLimit = New(1_0005, "login reach limit")
 	RequestBlocked  = New(1_0006, "request is blocked")
+	SessionExpired  = New(1_0007, "session expired")
 
 	UserNotExist          = New(2_0001, "user not exist or password incorrect")
 	PasswordIncorrect     = UserNotExist
