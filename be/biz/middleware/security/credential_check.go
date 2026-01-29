@@ -27,7 +27,7 @@ func NewCredentialCheck() app.HandlerFunc {
 			})
 			return
 		}
-		
+
 		currentCV, err := user.NewDefault().GetCredentialVersion(ctx, userID)
 		if err != nil {
 			// If user not found, they shouldn't be logged in.
@@ -44,7 +44,7 @@ func NewCredentialCheck() app.HandlerFunc {
 			c.Next(ctx)
 			return
 		}
-		
+
 		if currentCV != sessCV {
 			hlog.CtxInfof(ctx, "Credential version mismatch: session=%v, db=%v. UserID=%s", sessCV, currentCV, userID)
 

@@ -1,9 +1,9 @@
 package dto
 
 type RegisterReq struct {
-	Account  string `json:"account" validate:"required,max=64"`
-	Name     string `json:"name" validate:"required,max=64"`
-	Password string `json:"password" validate:"required,max=128"`
+	Account  string `json:"account" validate:"required,min=6,max=64"`
+	Name     string `json:"name" validate:"required,min=6,max=64"`
+	Password string `json:"password" validate:"required,min=8,max=128"`
 }
 
 type RegisterResp struct {
@@ -11,8 +11,8 @@ type RegisterResp struct {
 }
 
 type LoginReq struct {
-	Account  string `json:"account" validate:"max=64"`
-	Password string `json:"password" validate:"required,max=128"`
+	Account  string `json:"account" validate:"min=6,max=64"`
+	Password string `json:"password" validate:"required,min=8,max=128"`
 }
 
 type LoginResp struct {
@@ -45,14 +45,14 @@ type GetUserInfoResp struct {
 }
 
 type UpdateInfoReq struct {
-	Name string `json:"name" validate:"required,max=64"`
+	Name string `json:"name" validate:"required,min=6,max=64"`
 }
 
 type UpdateInfoResp struct{}
 
 type UpdatePasswordReq struct {
-	OldPassword string `json:"old_password" validate:"required,max=128"`
-	NewPassword string `json:"new_password" validate:"required,max=128"`
+	OldPassword string `json:"old_password" validate:"required,min=8,max=128"`
+	NewPassword string `json:"new_password" validate:"required,min=8,max=128"`
 }
 
 type UpdatePasswordResp struct{}

@@ -32,7 +32,7 @@ func TestUserRepository_Create(t *testing.T) {
 
 	created, err := r.Create(ctx, u)
 	assert.NoError(t, err)
-	assert.Equal(t, u.UserId, created.UserId)
+	assert.Equal(t, "test_user_id", created.UserId)
 	assert.Equal(t, u.Account, created.Account)
 
 	// Verify in DB

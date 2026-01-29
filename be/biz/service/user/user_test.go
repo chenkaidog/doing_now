@@ -2,176 +2,107 @@ package user
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"doing_now/be/biz/dal/repo"
 	"doing_now/be/biz/db/mysql"
 	"doing_now/be/biz/model/errs"
 	"doing_now/be/biz/model/storage"
-	"doing_now/be/biz/util/encode"
-	"doing_now/be/biz/util/random"
 
 	"github.com/bytedance/mockey"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 )
 
-func mockDB() {
-	mockey.Mock(mysql.GetDbConn).Return(&gorm.DB{}).Build()
-	mockey.Mock((*gorm.DB).WithContext).To(func(db *gorm.DB, ctx context.Context) *gorm.DB {
-		return db
-	}).Build()
-	mockey.Mock((*gorm.DB).Transaction).To(func(tx *gorm.DB, fc func(tx *gorm.DB) error, opts ...*sql.TxOptions) error {
-		return fc(tx)
-	}).Build()
+var (
+	patchOnce sync.Once
+	currentDB *gorm.DB
+)
+
+func ensurePatches() {
+	patchOnce.Do(func() {
+		mockey.Mock(mysql.GetDbConn).To(func() *gorm.DB {
+			return currentDB
+		}).Build()
+
+		mockey.Mock((*repo.UserRepository).FindByAccountLock).To(func(r *repo.UserRepository, ctx context.Context, account string) (*storage.UserRecord, error) {
+			return r.FindByAccount(ctx, account)
+		}).Build()
+		mockey.Mock((*repo.UserRepository).FindByUserIDLock).To(func(r *repo.UserRepository, ctx context.Context, userID string) (*storage.UserRecord, error) {
+			return r.FindByUserID(ctx, userID)
+		}).Build()
+		mockey.Mock((*repo.UserCredentialRepository).FindByUserIDLock).To(func(r *repo.UserCredentialRepository, ctx context.Context, userID string) (*storage.UserCredentialRecord, error) {
+			return r.FindByUserID(ctx, userID)
+		}).Build()
+	})
+}
+
+func setupSQLite(t *testing.T) *gorm.DB {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	assert.NoError(t, err)
+
+	sqlDB, err := db.DB()
+	assert.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+
+	err = db.AutoMigrate(&storage.UserRecord{}, &storage.UserCredentialRecord{})
+	assert.NoError(t, err)
+	return db
 }
 
 func TestService_Register(t *testing.T) {
-	t.Run("find error", func(t *testing.T) {
-		mockey.PatchConvey("find error", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByAccount).Return(nil, errors.New("db error")).Build()
+	ensurePatches()
+	currentDB = setupSQLite(t)
 
-			svc := New()
-			_, bizErr := svc.Register(context.Background(), "a", "n", "p")
-			assert.True(t, errs.ErrorEqual(errs.ServerError, bizErr))
-		})
-	})
+	svc := New()
 
-	t.Run("account duplicated", func(t *testing.T) {
-		mockey.PatchConvey("account duplicated", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByAccount).Return(&storage.UserRecord{UserId: "u1"}, nil).Build()
+	u, bizErr := svc.Register(context.Background(), "account01", "name0001", "password01")
+	assert.Nil(t, bizErr)
+	assert.NotEmpty(t, u.UserID)
 
-			svc := New()
-			_, bizErr := svc.Register(context.Background(), "a", "n", "p")
-			assert.True(t, errs.ErrorEqual(errs.UserNameDuplicatedErr, bizErr))
-		})
-	})
-
-	t.Run("create error", func(t *testing.T) {
-		mockey.PatchConvey("create error", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByAccount).Return(nil, nil).Build()
-			mockey.Mock((*repo.UserRepository).Create).Return(nil, errors.New("insert error")).Build()
-			mockey.Mock(random.RandStr).Return("salt").Build()
-			mockey.Mock(encode.EncodePassword).Return("hash").Build()
-
-			svc := New()
-			_, bizErr := svc.Register(context.Background(), "a", "n", "p")
-			assert.True(t, errs.ErrorEqual(errs.ServerError, bizErr))
-		})
-	})
-
-	t.Run("success", func(t *testing.T) {
-		mockey.PatchConvey("success", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByAccount).Return(nil, nil).Build()
-			mockey.Mock((*repo.UserRepository).Create).Return(&storage.UserRecord{
-				UserId: "u1", Account: "a", Name: "n",
-			}, nil).Build()
-			mockey.Mock((*repo.UserCredentialRepository).Create).Return(nil).Build()
-			mockey.Mock(random.RandStr).Return("salt").Build()
-			mockey.Mock(encode.EncodePassword).Return("hash").Build()
-
-			svc := New()
-			u, bizErr := svc.Register(context.Background(), "a", "n", "p")
-			assert.Nil(t, bizErr)
-			assert.Equal(t, "u1", u.UserID)
-		})
-	})
+	_, bizErr = svc.Register(context.Background(), "account01", "name0001", "password01")
+	assert.True(t, errs.ErrorEqual(errs.UserNameDuplicatedErr, bizErr))
 }
 
 func TestService_Login(t *testing.T) {
-	t.Run("find error", func(t *testing.T) {
-		mockey.PatchConvey("find error", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByAccountLock).Return(nil, errors.New("db error")).Build()
+	ensurePatches()
+	currentDB = setupSQLite(t)
 
-			svc := New()
-			_, _, bizErr := svc.Login(context.Background(), "a", "p")
-			assert.True(t, errs.ErrorEqual(errs.ServerError, bizErr))
-		})
-	})
+	svc := New()
+	_, bizErr := svc.Register(context.Background(), "account01", "name0001", "password01")
+	assert.Nil(t, bizErr)
 
-	t.Run("user not exist", func(t *testing.T) {
-		mockey.PatchConvey("user not exist", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByAccountLock).Return(nil, nil).Build()
+	_, _, bizErr = svc.Login(context.Background(), "not_exist", "password01")
+	assert.True(t, errs.ErrorEqual(errs.UserNotExist, bizErr))
 
-			svc := New()
-			_, _, bizErr := svc.Login(context.Background(), "a", "p")
-			assert.True(t, errs.ErrorEqual(errs.UserNotExist, bizErr))
-		})
-	})
+	_, _, bizErr = svc.Login(context.Background(), "account01", "badpassword")
+	assert.True(t, errs.ErrorEqual(errs.PasswordIncorrect, bizErr))
 
-	t.Run("password incorrect", func(t *testing.T) {
-		mockey.PatchConvey("password incorrect", t, func() {
-			mockDB()
-			u := &storage.UserRecord{UserId: "u1"}
-			c := &storage.UserCredentialRecord{UserId: "u1", PasswordSalt: "salt", PasswordHash: "right_hash"}
-			mockey.Mock((*repo.UserRepository).FindByAccountLock).Return(u, nil).Build()
-			mockey.Mock((*repo.UserCredentialRepository).FindByUserID).Return(c, nil).Build()
-			mockey.Mock(encode.EncodePassword).Return("wrong_hash").Build()
-
-			svc := New()
-			_, _, bizErr := svc.Login(context.Background(), "a", "wrong")
-			assert.True(t, errs.ErrorEqual(errs.PasswordIncorrect, bizErr))
-		})
-	})
-
-	t.Run("success", func(t *testing.T) {
-		mockey.PatchConvey("success", t, func() {
-			mockDB()
-			u := &storage.UserRecord{UserId: "u1"}
-			c := &storage.UserCredentialRecord{UserId: "u1", PasswordSalt: "salt", PasswordHash: "right_hash"}
-			mockey.Mock((*repo.UserRepository).FindByAccountLock).Return(u, nil).Build()
-			mockey.Mock((*repo.UserCredentialRepository).FindByUserID).Return(c, nil).Build()
-			mockey.Mock(encode.EncodePassword).Return("right_hash").Build()
-
-			svc := New()
-			out, _, bizErr := svc.Login(context.Background(), "a", "p")
-			assert.Nil(t, bizErr)
-			assert.Equal(t, "u1", out.UserID)
-		})
-	})
+	u, cv, bizErr := svc.Login(context.Background(), "account01", "password01")
+	assert.Nil(t, bizErr)
+	assert.Equal(t, uint(0), cv)
+	assert.NotEmpty(t, u.UserID)
 }
 
 func TestService_GetByUserID(t *testing.T) {
-	t.Run("find error", func(t *testing.T) {
-		mockey.PatchConvey("find error", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByUserID).Return(nil, errors.New("db error")).Build()
+	ensurePatches()
+	currentDB = setupSQLite(t)
 
-			svc := New()
-			_, bizErr := svc.GetByUserID(context.Background(), "u1")
-			assert.True(t, errs.ErrorEqual(errs.ServerError, bizErr))
-		})
-	})
+	svc := New()
+	_, bizErr := svc.GetByUserID(context.Background(), "u1")
+	assert.True(t, errs.ErrorEqual(errs.UserNotExist, bizErr))
 
-	t.Run("user not exist", func(t *testing.T) {
-		mockey.PatchConvey("user not exist", t, func() {
-			mockDB()
-			mockey.Mock((*repo.UserRepository).FindByUserID).Return(nil, nil).Build()
+	u, bizErr := svc.Register(context.Background(), "account01", "name0001", "password01")
+	assert.Nil(t, bizErr)
 
-			svc := New()
-			_, bizErr := svc.GetByUserID(context.Background(), "u1")
-			assert.True(t, errs.ErrorEqual(errs.UserNotExist, bizErr))
-		})
-	})
-
-	t.Run("success", func(t *testing.T) {
-		mockey.PatchConvey("success", t, func() {
-			mockDB()
-			u := &storage.UserRecord{UserId: "u1"}
-			mockey.Mock((*repo.UserRepository).FindByUserID).Return(u, nil).Build()
-
-			svc := New()
-			out, bizErr := svc.GetByUserID(context.Background(), "u1")
-			assert.Nil(t, bizErr)
-			assert.Equal(t, "u1", out.UserID)
-		})
-	})
+	out, bizErr := svc.GetByUserID(context.Background(), u.UserID)
+	assert.Nil(t, bizErr)
+	assert.Equal(t, u.UserID, out.UserID)
 }

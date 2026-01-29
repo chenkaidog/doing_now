@@ -43,7 +43,7 @@ func (s *Service) Register(ctx context.Context, account, name, password string) 
 		}
 
 		userRecord, err = users.Create(ctx, &storage.UserRecord{
-			UserId: uuid.New().String(),
+			UserId:  uuid.New().String(),
 			Account: account,
 			Name:    name,
 		})
