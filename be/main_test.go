@@ -392,6 +392,32 @@ func TestUserRegister(t *testing.T) {
 			assert.False(t, resp2.Success)
 			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp2.Code)
 		})
+
+		t.Run("业务错误: 重复账号注册返回UserNameDuplicatedErr", func(t *testing.T) {
+			redisdb.GetRedisClient().FlushAll(context.Background())
+			ip2 := "127.0.0.2"
+			ip3 := "127.0.0.3"
+			account := "account_dup01"
+			name := "name_dup01"
+			password := "password01"
+
+			rr := perform(h, http.MethodPost, "/api/v1/user/register",
+				`{"account":"`+account+`","name":"`+name+`","password":"`+password+`"}`,
+				ut.Header{Key: "X-Forwarded-For", Value: ip2},
+			)
+			assert.DeepEqual(t, http.StatusOK, rr.Code)
+			resp := decodeCommonResp(t, rr.Body.Bytes())
+			assert.True(t, resp.Success)
+
+			rr2 := perform(h, http.MethodPost, "/api/v1/user/register",
+				`{"account":"`+account+`","name":"name_dup02","password":"password02"}`,
+				ut.Header{Key: "X-Forwarded-For", Value: ip3},
+			)
+			assert.DeepEqual(t, http.StatusOK, rr2.Code)
+			resp2 := decodeCommonResp(t, rr2.Body.Bytes())
+			assert.False(t, resp2.Success)
+			assert.DeepEqual(t, int(errs.UserNameDuplicatedErr.Code()), resp2.Code)
+		})
 	})
 }
 
@@ -460,6 +486,86 @@ func TestUserLogin(t *testing.T) {
 			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp.Code)
 		})
 
+		t.Run("LoginProtection前置逻辑: 小时block key存在返回403", func(t *testing.T) {
+			redisdb.GetRedisClient().FlushAll(context.Background())
+			err := redisdb.GetRedisClient().Set(context.Background(), "rate_limit:login_block_h:"+ip, "1", 0).Err()
+			assert.Nil(t, err)
+
+			rr := perform(h, http.MethodPost, "/api/v1/user/login", `{}`, ut.Header{Key: "X-Forwarded-For", Value: ip})
+			assert.DeepEqual(t, http.StatusForbidden, rr.Code)
+			resp := decodeCommonResp(t, rr.Body.Bytes())
+			assert.False(t, resp.Success)
+			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp.Code)
+		})
+
+		t.Run("LoginProtection前置逻辑: 分钟block key存在返回403", func(t *testing.T) {
+			redisdb.GetRedisClient().FlushAll(context.Background())
+			err := redisdb.GetRedisClient().Set(context.Background(), "rate_limit:login_block_m:"+ip, "1", 0).Err()
+			assert.Nil(t, err)
+
+			rr := perform(h, http.MethodPost, "/api/v1/user/login", `{}`, ut.Header{Key: "X-Forwarded-For", Value: ip})
+			assert.DeepEqual(t, http.StatusForbidden, rr.Code)
+			resp := decodeCommonResp(t, rr.Body.Bytes())
+			assert.False(t, resp.Success)
+			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp.Code)
+		})
+
+		t.Run("LoginProtection后置逻辑: 非账户类失败不计入login_fail", func(t *testing.T) {
+			redisdb.GetRedisClient().FlushAll(context.Background())
+			patch := mockey.Mock((*usersvc.Service).Login).
+				Return((*domain.User)(nil), uint(0), errs.ServerError.SetMsg("mock server error")).
+				Build()
+			defer patch.UnPatch()
+
+			rr := perform(h, http.MethodPost, "/api/v1/user/login",
+				`{"account":"account_server","password":"password11"}`,
+				ut.Header{Key: "X-Forwarded-For", Value: ip},
+			)
+			assert.DeepEqual(t, http.StatusOK, rr.Code)
+			resp := decodeCommonResp(t, rr.Body.Bytes())
+			assert.False(t, resp.Success)
+			assert.DeepEqual(t, int(errs.ServerError.Code()), resp.Code)
+
+			exists, err := redisdb.GetRedisClient().Exists(context.Background(), "rate_limit:login_fail:"+ip).Result()
+			assert.Nil(t, err)
+			assert.DeepEqual(t, int64(0), exists)
+		})
+
+		t.Run("LoginProtection后置逻辑: Level2触发小时block key", func(t *testing.T) {
+			redisdb.GetRedisClient().FlushAll(context.Background())
+			account := "account_lvl2_10"
+			name := "name_lvl2_10"
+			password := "password10"
+			mustCreateUserViaService(t, account, name, password)
+
+			err := redisdb.GetRedisClient().Set(context.Background(), "rate_limit:login_fail:"+ip, "2", 0).Err()
+			assert.Nil(t, err)
+			err = redisdb.GetRedisClient().Set(context.Background(), "login_fail_level:"+ip, "1", 0).Err()
+			assert.Nil(t, err)
+
+			rr := perform(h, http.MethodPost, "/api/v1/user/login",
+				`{"account":"`+account+`","password":"badpassword"}`,
+				ut.Header{Key: "X-Forwarded-For", Value: ip},
+			)
+			assert.DeepEqual(t, http.StatusOK, rr.Code)
+			resp := decodeCommonResp(t, rr.Body.Bytes())
+			assert.False(t, resp.Success)
+			assert.DeepEqual(t, int(errs.PasswordIncorrect.Code()), resp.Code)
+
+			exists, err := redisdb.GetRedisClient().Exists(context.Background(), "rate_limit:login_block_h:"+ip).Result()
+			assert.Nil(t, err)
+			assert.DeepEqual(t, int64(1), exists)
+
+			rr2 := perform(h, http.MethodPost, "/api/v1/user/login",
+				`{"account":"`+account+`","password":"badpassword"}`,
+				ut.Header{Key: "X-Forwarded-For", Value: ip},
+			)
+			assert.DeepEqual(t, http.StatusForbidden, rr2.Code)
+			resp2 := decodeCommonResp(t, rr2.Body.Bytes())
+			assert.False(t, resp2.Success)
+			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp2.Code)
+		})
+
 		t.Run("正常: 登录成功返回access_token并下发session与refresh_token cookie", func(t *testing.T) {
 			redisdb.GetRedisClient().FlushAll(context.Background())
 			account := "account_ok10"
@@ -481,8 +587,23 @@ func TestUserLogin(t *testing.T) {
 			cookies := cookiesFromRecorder(t, rr)
 			assert.True(t, cookies["auth_session_id"] != "")
 			assert.True(t, cookies["refresh_token"] != "")
+
+			count, err := redisdb.GetRedisClient().Get(context.Background(), "rate_limit:login_success:"+account).Int64()
+			assert.Nil(t, err)
+			assert.True(t, count >= 1)
 		})
 	})
+}
+
+func TestPing(t *testing.T) {
+	h := newTestServer(t)
+	rr := perform(h, http.MethodGet, "/ping", "")
+	assert.DeepEqual(t, http.StatusOK, rr.Code)
+
+	var out map[string]any
+	err := json.Unmarshal(rr.Body.Bytes(), &out)
+	assert.Nil(t, err)
+	assert.DeepEqual(t, "pong", out["message"])
 }
 
 func TestRefreshToken(t *testing.T) {

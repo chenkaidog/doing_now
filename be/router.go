@@ -19,7 +19,7 @@ func customizedRegister(r *server.Hertz) {
 		user := api.Group("/user")
 		{
 			user.POST("/register", security.NewRegisterProtection(), handler.Register)
-			user.POST("/login", security.NewLoginProtection(), security.NewLoginSuccessRecorder(), handler.Login)
+			user.POST("/login", security.NewLoginProtection(), handler.Login)
 			user.POST("/refresh_token", handler.RefreshToken)
 			loginUser := user.Group("/", jwt.ValidateMW(), security.NewCredentialCheck())
 			{
