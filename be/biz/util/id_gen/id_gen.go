@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	idgen = NewIDGenerator(10)
+	idgen = NewIDGenerator(100)
 }
 
 func NewID() string {

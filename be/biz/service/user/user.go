@@ -9,6 +9,7 @@ import (
 	"doing_now/be/biz/model/domain"
 	"doing_now/be/biz/model/errs"
 	"doing_now/be/biz/model/storage"
+	"doing_now/be/biz/service/security"
 	"doing_now/be/biz/util/encode"
 	"doing_now/be/biz/util/random"
 
@@ -20,6 +21,38 @@ import (
 type Service struct {
 }
 
+type RegisterParam struct {
+	Account  string
+	Name     string
+	Password string
+	ClientIP string
+}
+
+type LoginParam struct {
+	Account  string
+	Password string
+	ClientIP string
+}
+
+type GetByUserIDParam struct {
+	UserID string
+}
+
+type UpdateInfoParam struct {
+	UserID string
+	Name   string
+}
+
+type GetCredentialVersionParam struct {
+	UserID string
+}
+
+type UpdatePasswordParam struct {
+	UserID      string
+	OldPassword string
+	NewPassword string
+}
+
 func New() *Service {
 	return &Service{}
 }
@@ -28,13 +61,18 @@ func NewDefault() *Service {
 	return New()
 }
 
-func (s *Service) Register(ctx context.Context, account, name, password string) (*domain.User, errs.Error) {
+func (s *Service) Register(ctx context.Context, param RegisterParam) (*domain.User, errs.Error) {
+	if bizErr := security.CheckRegisterAllowed(ctx, param.ClientIP); bizErr != nil {
+		hlog.CtxNoticef(ctx, "CheckRegisterAllowed err: %v", bizErr)
+		return nil, bizErr
+	}
+
 	var userRecord *storage.UserRecord
 	err := mysql.GetDbConn().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		users := repo.NewUserRepository(tx)
 		credentials := repo.NewUserCredentialRepository(tx)
 
-		existing, err := users.FindByAccount(ctx, account)
+		existing, err := users.FindByAccount(ctx, param.Account)
 		if err != nil {
 			return err
 		}
@@ -44,15 +82,15 @@ func (s *Service) Register(ctx context.Context, account, name, password string) 
 
 		userRecord, err = users.Create(ctx, &storage.UserRecord{
 			UserId:  uuid.New().String(),
-			Account: account,
-			Name:    name,
+			Account: param.Account,
+			Name:    param.Name,
 		})
 		if err != nil {
 			return err
 		}
 
 		salt := random.RandStr(32)
-		hash := encode.EncodePassword(salt, password)
+		hash := encode.EncodePassword(salt, param.Password)
 		if err := credentials.Create(ctx, &storage.UserCredentialRecord{
 			UserId:            userRecord.UserId,
 			PasswordSalt:      salt,
@@ -66,7 +104,7 @@ func (s *Service) Register(ctx context.Context, account, name, password string) 
 
 	if err != nil {
 		if errs.IsDuplicatedErr(err) {
-			hlog.CtxNoticef(ctx, "user name duplicated: %s", account)
+			hlog.CtxNoticef(ctx, "user name duplicated: %s", param.Account)
 			return nil, errs.UserNameDuplicatedErr
 		}
 		if bizErr, ok := err.(errs.Error); ok {
@@ -75,11 +113,16 @@ func (s *Service) Register(ctx context.Context, account, name, password string) 
 		hlog.CtxErrorf(ctx, "register user err: %v", err)
 		return nil, errs.ServerError.SetErr(err)
 	}
+	security.MarkRegisterSuccess(ctx, param.ClientIP)
 	userDomain := convert.UserRecordToDomain(userRecord)
 	return userDomain, nil
 }
 
-func (s *Service) Login(ctx context.Context, account, password string) (*domain.User, uint, errs.Error) {
+func (s *Service) Login(ctx context.Context, param LoginParam) (*domain.User, uint, errs.Error) {
+	if bizErr := security.CheckLoginAllowed(ctx, param.ClientIP, param.Account); bizErr != nil {
+		return nil, 0, bizErr
+	}
+
 	var userRecord *storage.UserRecord
 	var credentialVersion uint
 	err := mysql.GetDbConn().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -87,13 +130,13 @@ func (s *Service) Login(ctx context.Context, account, password string) (*domain.
 		credentials := repo.NewUserCredentialRepository(tx)
 
 		// 1. Lock user record
-		u, err := users.FindByAccountLock(ctx, account)
+		u, err := users.FindByAccountLock(ctx, param.Account)
 		if err != nil {
 			hlog.CtxErrorf(ctx, "find user by account lock err: %v", err)
 			return err
 		}
 		if u == nil {
-			hlog.CtxNoticef(ctx, "user not exist: %s", account)
+			hlog.CtxNoticef(ctx, "user not exist: %s", param.Account)
 			return errs.UserNotExist
 		}
 		userRecord = u
@@ -111,7 +154,7 @@ func (s *Service) Login(ctx context.Context, account, password string) (*domain.
 		}
 
 		// 3. Verify password
-		if encode.EncodePassword(c.PasswordSalt, password) != c.PasswordHash {
+		if encode.EncodePassword(c.PasswordSalt, param.Password) != c.PasswordHash {
 			hlog.CtxNoticef(ctx, "password incorrect for user id: %s", userRecord.UserId)
 			return errs.PasswordIncorrect
 		}
@@ -122,6 +165,9 @@ func (s *Service) Login(ctx context.Context, account, password string) (*domain.
 
 	if err != nil {
 		if bizErr, ok := err.(errs.Error); ok {
+			if security.ShouldHandleLoginFailure(bizErr) {
+				security.HandleLoginFailure(ctx, param.ClientIP)
+			}
 			hlog.CtxNoticef(ctx, "login user err: %v", bizErr)
 			return nil, 0, bizErr
 		}
@@ -132,9 +178,9 @@ func (s *Service) Login(ctx context.Context, account, password string) (*domain.
 	return userDomain, credentialVersion, nil
 }
 
-func (s *Service) GetByUserID(ctx context.Context, userID string) (*domain.User, errs.Error) {
+func (s *Service) GetByUserID(ctx context.Context, param GetByUserIDParam) (*domain.User, errs.Error) {
 	users := repo.NewUserRepository(mysql.GetDbConn().WithContext(ctx))
-	u, err := users.FindByUserID(ctx, userID)
+	u, err := users.FindByUserID(ctx, param.UserID)
 	if err != nil {
 		if bizErr, ok := err.(errs.Error); ok {
 			return nil, bizErr
@@ -148,17 +194,17 @@ func (s *Service) GetByUserID(ctx context.Context, userID string) (*domain.User,
 	return convert.UserRecordToDomain(u), nil
 }
 
-func (s *Service) UpdateInfo(ctx context.Context, userID, name string) errs.Error {
+func (s *Service) UpdateInfo(ctx context.Context, param UpdateInfoParam) errs.Error {
 	err := mysql.GetDbConn().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		users := repo.NewUserRepository(tx)
-		u, err := users.FindByUserIDLock(ctx, userID)
+		u, err := users.FindByUserIDLock(ctx, param.UserID)
 		if err != nil {
 			return err
 		}
 		if u == nil {
 			return errs.UserNotExist
 		}
-		u.Name = name
+		u.Name = param.Name
 		if err := users.Update(ctx, u); err != nil {
 			return err
 		}
@@ -176,9 +222,9 @@ func (s *Service) UpdateInfo(ctx context.Context, userID, name string) errs.Erro
 	return nil
 }
 
-func (s *Service) GetCredentialVersion(ctx context.Context, userID string) (uint, errs.Error) {
+func (s *Service) GetCredentialVersion(ctx context.Context, param GetCredentialVersionParam) (uint, errs.Error) {
 	credentials := repo.NewUserCredentialRepository(mysql.GetDbConn().WithContext(ctx))
-	c, err := credentials.FindByUserID(ctx, userID)
+	c, err := credentials.FindByUserID(ctx, param.UserID)
 	if err != nil {
 		hlog.CtxErrorf(ctx, "find credential by user id err: %v", err)
 		return 0, errs.ServerError.SetErr(err)
@@ -189,13 +235,13 @@ func (s *Service) GetCredentialVersion(ctx context.Context, userID string) (uint
 	return c.CredentialVersion, nil
 }
 
-func (s *Service) UpdatePassword(ctx context.Context, userID, oldPassword, newPassword string) errs.Error {
+func (s *Service) UpdatePassword(ctx context.Context, param UpdatePasswordParam) errs.Error {
 	err := mysql.GetDbConn().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		users := repo.NewUserRepository(tx)
 		credentials := repo.NewUserCredentialRepository(tx)
 
 		// 1. Lock user
-		u, err := users.FindByUserIDLock(ctx, userID)
+		u, err := users.FindByUserIDLock(ctx, param.UserID)
 		if err != nil {
 			return err
 		}
@@ -204,7 +250,7 @@ func (s *Service) UpdatePassword(ctx context.Context, userID, oldPassword, newPa
 		}
 
 		// 2. Get credential
-		c, err := credentials.FindByUserIDLock(ctx, userID)
+		c, err := credentials.FindByUserIDLock(ctx, param.UserID)
 		if err != nil {
 			return err
 		}
@@ -213,13 +259,13 @@ func (s *Service) UpdatePassword(ctx context.Context, userID, oldPassword, newPa
 		}
 
 		// 3. Verify old password
-		if encode.EncodePassword(c.PasswordSalt, oldPassword) != c.PasswordHash {
+		if encode.EncodePassword(c.PasswordSalt, param.OldPassword) != c.PasswordHash {
 			return errs.PasswordIncorrect
 		}
 
 		// 4. Update password
 		salt := random.RandStr(32)
-		hash := encode.EncodePassword(salt, newPassword)
+		hash := encode.EncodePassword(salt, param.NewPassword)
 		c.PasswordSalt = salt
 		c.PasswordHash = hash
 		c.CredentialVersion += 1 // Increment version

@@ -12,6 +12,7 @@ import (
 	"doing_now/be/biz/db/mysql"
 	"doing_now/be/biz/model/errs"
 	"doing_now/be/biz/model/storage"
+	"doing_now/be/biz/service/security"
 
 	"github.com/bytedance/mockey"
 	"github.com/glebarez/sqlite"
@@ -23,6 +24,8 @@ var (
 	patchOnce sync.Once
 	currentDB *gorm.DB
 )
+
+const testClientIP = "127.0.0.1"
 
 func ensurePatches() {
 	patchOnce.Do(func() {
@@ -39,6 +42,10 @@ func ensurePatches() {
 		mockey.Mock((*repo.UserCredentialRepository).FindByUserIDLock).To(func(r *repo.UserCredentialRepository, ctx context.Context, userID string) (*storage.UserCredentialRecord, error) {
 			return r.FindByUserID(ctx, userID)
 		}).Build()
+		mockey.Mock(security.CheckRegisterAllowed).Return(nil).Build()
+		mockey.Mock(security.MarkRegisterSuccess).To(func(ctx context.Context, ip string) {}).Build()
+		mockey.Mock(security.CheckLoginAllowed).Return(nil).Build()
+		mockey.Mock(security.HandleLoginFailure).To(func(ctx context.Context, ip string) {}).Build()
 	})
 }
 
@@ -63,11 +70,21 @@ func TestService_Register(t *testing.T) {
 
 	svc := New()
 
-	u, bizErr := svc.Register(context.Background(), "account01", "name0001", "password01")
+	u, bizErr := svc.Register(context.Background(), RegisterParam{
+		Account:  "account01",
+		Name:     "name0001",
+		Password: "password01",
+		ClientIP: testClientIP,
+	})
 	assert.Nil(t, bizErr)
 	assert.NotEmpty(t, u.UserID)
 
-	_, bizErr = svc.Register(context.Background(), "account01", "name0001", "password01")
+	_, bizErr = svc.Register(context.Background(), RegisterParam{
+		Account:  "account01",
+		Name:     "name0001",
+		Password: "password01",
+		ClientIP: testClientIP,
+	})
 	assert.True(t, errs.ErrorEqual(errs.UserNameDuplicatedErr, bizErr))
 }
 
@@ -76,16 +93,33 @@ func TestService_Login(t *testing.T) {
 	currentDB = setupSQLite(t)
 
 	svc := New()
-	_, bizErr := svc.Register(context.Background(), "account01", "name0001", "password01")
+	_, bizErr := svc.Register(context.Background(), RegisterParam{
+		Account:  "account01",
+		Name:     "name0001",
+		Password: "password01",
+		ClientIP: testClientIP,
+	})
 	assert.Nil(t, bizErr)
 
-	_, _, bizErr = svc.Login(context.Background(), "not_exist", "password01")
+	_, _, bizErr = svc.Login(context.Background(), LoginParam{
+		Account:  "not_exist",
+		Password: "password01",
+		ClientIP: testClientIP,
+	})
 	assert.True(t, errs.ErrorEqual(errs.UserNotExist, bizErr))
 
-	_, _, bizErr = svc.Login(context.Background(), "account01", "badpassword")
+	_, _, bizErr = svc.Login(context.Background(), LoginParam{
+		Account:  "account01",
+		Password: "badpassword",
+		ClientIP: testClientIP,
+	})
 	assert.True(t, errs.ErrorEqual(errs.PasswordIncorrect, bizErr))
 
-	u, cv, bizErr := svc.Login(context.Background(), "account01", "password01")
+	u, cv, bizErr := svc.Login(context.Background(), LoginParam{
+		Account:  "account01",
+		Password: "password01",
+		ClientIP: testClientIP,
+	})
 	assert.Nil(t, bizErr)
 	assert.Equal(t, uint(0), cv)
 	assert.NotEmpty(t, u.UserID)
@@ -96,13 +130,22 @@ func TestService_GetByUserID(t *testing.T) {
 	currentDB = setupSQLite(t)
 
 	svc := New()
-	_, bizErr := svc.GetByUserID(context.Background(), "u1")
+	_, bizErr := svc.GetByUserID(context.Background(), GetByUserIDParam{
+		UserID: "u1",
+	})
 	assert.True(t, errs.ErrorEqual(errs.UserNotExist, bizErr))
 
-	u, bizErr := svc.Register(context.Background(), "account01", "name0001", "password01")
+	u, bizErr := svc.Register(context.Background(), RegisterParam{
+		Account:  "account01",
+		Name:     "name0001",
+		Password: "password01",
+		ClientIP: testClientIP,
+	})
 	assert.Nil(t, bizErr)
 
-	out, bizErr := svc.GetByUserID(context.Background(), u.UserID)
+	out, bizErr := svc.GetByUserID(context.Background(), GetByUserIDParam{
+		UserID: u.UserID,
+	})
 	assert.Nil(t, bizErr)
 	assert.Equal(t, u.UserID, out.UserID)
 }

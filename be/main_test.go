@@ -3,83 +3,86 @@ package main_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"testing"
-	"time"
-
 	be "doing_now/be"
 	"doing_now/be/biz/config"
 	"doing_now/be/biz/dal/repo"
 	"doing_now/be/biz/db/mysql"
 	redisdb "doing_now/be/biz/db/redis"
-	jwtmw "doing_now/be/biz/middleware/jwt"
-	"doing_now/be/biz/model/domain"
 	"doing_now/be/biz/model/dto"
 	"doing_now/be/biz/model/errs"
 	"doing_now/be/biz/model/storage"
 	usersvc "doing_now/be/biz/service/user"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/bytedance/mockey"
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/cloudwego/hertz/pkg/common/test/assert"
 	"github.com/cloudwego/hertz/pkg/common/ut"
-	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/glebarez/sqlite"
-	jwtlib "github.com/golang-jwt/jwt/v5"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 )
 
-var testEngine *server.Hertz
-var baseConfPath string
-var baseConfContent string
+const (
+	testSessionCookieName = "auth_session_id"
+	testRefreshCookieName = "refresh_token"
+)
 
-func TestMain(t *testing.M) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		panic(err)
+var (
+	testServerOnce    sync.Once
+	testServer        *server.Hertz
+	testServerCleanup func()
+	testServerErr     error
+)
+
+func TestMain(m *testing.M) {
+	testServerOnce.Do(func() {
+		testServer, testServerCleanup, testServerErr = startTestServer()
+	})
+	code := m.Run()
+	if testServerCleanup != nil {
+		testServerCleanup()
 	}
-	dir, err := os.MkdirTemp("", "doing_now_test_conf_*")
-	if err != nil {
-		panic(err)
-	}
-	confPath := filepath.Join(dir, "deploy.yml")
-	confStr := `mysql:
+	os.Exit(code)
+}
+
+func writeTestConfig(t *testing.T, redisPort string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "deploy.yml")
+	content := fmt.Sprintf(`mysql:
   db_name: ""
   ip: "127.0.0.1"
   port: 3306
   username: ""
   password: ""
-
+  slow_threshold: 0
+  log_level: 0
 redis:
-  ip: "` + mr.Host() + `"
-  port: ` + mr.Port() + `
+  ip: "127.0.0.1"
+  port: %s
   password: ""
   db: 0
-
 jwt:
-  access_expiration: 3600
-  refresh_expiration: 7200
+  issuer: "test"
   access_token_secret: "accesstoken-secret"
   refresh_token_secret: "refreshtoken-secret"
-  issuer: "test"
-
+  access_expiration: 3600
+  refresh_expiration: 7200
 cors:
-  allow_origins:
-    - "*"
-  allow_methods:
-    - "GET"
-  allow_headers:
-    - "Origin"
+  allow_origins: ["*"]
+  allow_methods: ["GET","POST"]
+  allow_headers: ["Origin","Content-Type","Authorization","Cookie"]
   allow_credentials: true
   max_age: 600
-
 session:
   store_prefix: "auth_session:"
   name: "auth_session_id"
@@ -89,7 +92,6 @@ session:
   secure: false
   http_only: true
   same_site: "Strict"
-
 rate_limit:
   - path: "/api/v1/user/register"
     window_seconds: 1
@@ -111,64 +113,185 @@ rate_limit:
     window_seconds: 1
     limit: 100
     has_session: false
-`
-	conf := []byte(confStr)
-	if err := os.WriteFile(confPath, conf, 0600); err != nil {
-		panic(err)
+  - path: "/api/v1/user/update_info"
+    window_seconds: 1
+    limit: 100
+    has_session: true
+  - path: "/api/v1/user/update_password"
+    window_seconds: 1
+    limit: 100
+    has_session: true
+logger:
+  level: "debug"
+  dir: ""
+  file_name: ""
+  max_size: 10
+  max_backups: 1
+  max_age: 1
+login_protection:
+  window_seconds: 300
+  limit: 3
+  block_min_duration: 5
+  block_hour_duration: 24
+  level_duration: 1800
+  success_window_seconds: 60
+  success_limit: 10
+register_protection:
+  block_minutes: 10
+`, redisPort)
+	err := os.WriteFile(p, []byte(content), 0600)
+	assert.NoError(t, err)
+	return p
+}
+
+func writeTestConfigForMainTest(redisPort string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "doing-now-config-*")
+	if err != nil {
+		return "", nil, err
 	}
-	baseConfPath = confPath
-	baseConfContent = confStr
-	config.Init(baseConfPath)
-	redisdb.Init()
-
-	testEngine = be.NewEngine()
-	os.Exit(t.Run())
-}
-
-func newTestServer(t *testing.T) *server.Hertz {
-	t.Helper()
-	redisdb.GetRedisClient().FlushAll(context.Background())
-	return testEngine
-}
-
-func perform(h *server.Hertz, method, url string, body string, headers ...ut.Header) *ut.ResponseRecorder {
-	var b *ut.Body
-	if body != "" {
-		b = &ut.Body{Body: bytes.NewBufferString(body), Len: len(body)}
+	p := filepath.Join(dir, "deploy.yml")
+	content := fmt.Sprintf(`mysql:
+  db_name: ""
+  ip: "127.0.0.1"
+  port: 3306
+  username: ""
+  password: ""
+  slow_threshold: 0
+  log_level: 0
+redis:
+  ip: "127.0.0.1"
+  port: %s
+  password: ""
+  db: 0
+jwt:
+  issuer: "test"
+  access_token_secret: "accesstoken-secret"
+  refresh_token_secret: "refreshtoken-secret"
+  access_expiration: 3600
+  refresh_expiration: 7200
+cors:
+  allow_origins: ["*"]
+  allow_methods: ["GET","POST"]
+  allow_headers: ["Origin","Content-Type","Authorization","Cookie"]
+  allow_credentials: true
+  max_age: 600
+session:
+  store_prefix: "auth_session:"
+  name: "auth_session_id"
+  path: "/"
+  domain: ""
+  max_age: 604800
+  secure: false
+  http_only: true
+  same_site: "Strict"
+rate_limit:
+  - path: "/api/v1/user/register"
+    window_seconds: 1
+    limit: 100
+    has_session: false
+  - path: "/api/v1/user/login"
+    window_seconds: 1
+    limit: 100
+    has_session: false
+  - path: "/api/v1/user/info"
+    window_seconds: 1
+    limit: 100
+    has_session: true
+  - path: "/api/v1/user/logout"
+    window_seconds: 1
+    limit: 100
+    has_session: true
+  - path: "/api/v1/user/refresh_token"
+    window_seconds: 1
+    limit: 100
+    has_session: false
+  - path: "/api/v1/user/update_info"
+    window_seconds: 1
+    limit: 100
+    has_session: true
+  - path: "/api/v1/user/update_password"
+    window_seconds: 1
+    limit: 100
+    has_session: true
+logger:
+  level: "debug"
+  dir: ""
+  file_name: ""
+  max_size: 10
+  max_backups: 1
+  max_age: 1
+login_protection:
+  window_seconds: 300
+  limit: 3
+  block_min_duration: 5
+  block_hour_duration: 24
+  level_duration: 1800
+  success_window_seconds: 60
+  success_limit: 10
+register_protection:
+  block_minutes: 10
+`, redisPort)
+	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
 	}
-	allHeaders := append([]ut.Header{{Key: "Content-Type", Value: "application/json"}}, headers...)
-	return ut.PerformRequest(h.Engine, method, url, b, allHeaders...)
-}
-
-func decodeCommonResp(t *testing.T, respBody []byte) dto.CommonResp {
-	t.Helper()
-	var r dto.CommonResp
-	err := json.Unmarshal(respBody, &r)
-	assert.Nil(t, err)
-	return r
+	cleanup := func() {
+		_ = os.RemoveAll(dir)
+	}
+	return p, cleanup, nil
 }
 
 func newSQLiteDB(t *testing.T) *gorm.DB {
 	t.Helper()
-
-	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
-	assert.Nil(t, err)
-
-	sqlDB, err := db.DB()
-	assert.Nil(t, err)
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	assert.NoError(t, err)
 	err = db.AutoMigrate(&storage.UserRecord{}, &storage.UserCredentialRecord{})
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	return db
 }
 
-func patchSQLiteMySQLConn(t *testing.T, db *gorm.DB) {
-	t.Helper()
-	mockey.Mock(mysql.GetDbConn).Return(db).Build()
+func newSQLiteDBForMainTest() (*gorm.DB, error) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+	if err := db.AutoMigrate(&storage.UserRecord{}, &storage.UserCredentialRecord{}); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
 
+func startTestServer() (*server.Hertz, func(), error) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		return nil, nil, err
+	}
+	configPath, cleanupConfig, err := writeTestConfigForMainTest(mr.Port())
+	if err != nil {
+		mr.Close()
+		return nil, nil, err
+	}
+	config.Init(configPath)
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "127.0.0.1:" + mr.Port(),
+		Password: "",
+		DB:       0,
+	})
+	db, err := newSQLiteDBForMainTest()
+	if err != nil {
+		_ = rdb.Close()
+		cleanupConfig()
+		mr.Close()
+		return nil, nil, err
+	}
+
+	mockey.Mock(redisdb.GetRedisClient).To(func() *redis.Client {
+		return rdb
+	}).Build()
+	mockey.Mock(mysql.GetDbConn).To(func() *gorm.DB {
+		return db
+	}).Build()
 	mockey.Mock((*repo.UserRepository).FindByAccountLock).To(func(r *repo.UserRepository, ctx context.Context, account string) (*storage.UserRecord, error) {
 		return r.FindByAccount(ctx, account)
 	}).Build()
@@ -178,624 +301,625 @@ func patchSQLiteMySQLConn(t *testing.T, db *gorm.DB) {
 	mockey.Mock((*repo.UserCredentialRepository).FindByUserIDLock).To(func(r *repo.UserCredentialRepository, ctx context.Context, userID string) (*storage.UserCredentialRecord, error) {
 		return r.FindByUserID(ctx, userID)
 	}).Build()
+
+	h := be.NewEngine()
+	cleanup := func() {
+		mockey.UnPatchAll()
+		_ = rdb.Close()
+		cleanupConfig()
+		mr.Close()
+	}
+	return h, cleanup, nil
 }
 
-func cookiesFromRecorder(t *testing.T, rr *ut.ResponseRecorder) map[string]string {
+func newTestServer(t *testing.T) (*server.Hertz, func()) {
 	t.Helper()
+	if testServerErr != nil {
+		t.Fatalf("start test server err: %v", testServerErr)
+	}
+	if testServer == nil {
+		t.Fatalf("test server not initialized")
+	}
+	return testServer, func() {}
+}
 
-	cookies := map[string]string{}
-
-	getCookieValue := func(name string) (string, bool) {
-		c := protocol.AcquireCookie()
-		defer protocol.ReleaseCookie(c)
-		c.SetKey(name)
-		if !rr.Header().Cookie(c) {
-			return "", false
+func perform(h *server.Hertz, method, path, body string, headers ...ut.Header) *ut.ResponseRecorder {
+	var reqBody *ut.Body
+	if body != "" {
+		reqBody = &ut.Body{
+			Body: bytes.NewBufferString(body),
+			Len:  len(body),
 		}
-		return string(c.Value()), true
 	}
+	return ut.PerformRequest(h.Engine, method, path, reqBody, headers...)
+}
 
-	sessCookieName := config.GetSessionConf().Name
-	if sessCookieName == "" {
-		sessCookieName = "auth_session_id"
-	}
-	if v, ok := getCookieValue(sessCookieName); ok {
-		cookies[sessCookieName] = v
-	}
-	if v, ok := getCookieValue("refresh_token"); ok {
-		cookies["refresh_token"] = v
-	}
+func decodeCommonResp(t *testing.T, body []byte) dto.CommonResp {
+	t.Helper()
+	var resp dto.CommonResp
+	err := json.Unmarshal(body, &resp)
+	assert.NoError(t, err)
+	return resp
+}
+
+func extractCookies(rr *ut.ResponseRecorder) map[string]string {
+	cookies := make(map[string]string)
+	rr.Header().VisitAllCookie(func(key, value []byte) {
+		cookies[string(key)] = string(value)
+	})
 	return cookies
 }
 
-func cookieHeaderFromRecorder(t *testing.T, rr *ut.ResponseRecorder) string {
+func mustCookieHeader(t *testing.T, cookies map[string]string, names ...string) string {
 	t.Helper()
-
-	cookies := cookiesFromRecorder(t, rr)
-	keys := make([]string, 0, len(cookies))
-	for k := range cookies {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, k+"="+cookies[k])
-	}
-	return strings.Join(out, "; ")
-}
-
-func mergeCookieHeader(existing string, add string) string {
-	if strings.TrimSpace(existing) == "" {
-		return add
-	}
-	if strings.TrimSpace(add) == "" {
-		return existing
-	}
-	return existing + "; " + add
-}
-
-func setCookie(existing, name, value string) string {
-	cookies := map[string]string{}
-	for _, part := range strings.Split(existing, ";") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		v, ok := cookies[name]
+		assert.True(t, ok)
+		assert.NotEmpty(t, v)
+		if strings.HasPrefix(v, name+"=") {
+			v = strings.TrimPrefix(v, name+"=")
 		}
-		kv := strings.SplitN(part, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		cookies[kv[0]] = kv[1]
+		parts = append(parts, name+"="+v)
 	}
-	cookies[name] = value
-
-	out := make([]string, 0, len(cookies))
-	for k, v := range cookies {
-		out = append(out, k+"="+v)
-	}
-	return strings.Join(out, "; ")
+	return strings.Join(parts, "; ")
 }
 
-func parseAccessToken(t *testing.T, rr *ut.ResponseRecorder) string {
+func cookieValue(cookieHeader string, name string) string {
+	parts := strings.Split(cookieHeader, ";")
+	prefix := name + "="
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
+func mustCreateUserViaService(t *testing.T, account, name, password string) {
 	t.Helper()
+	_, bizErr := usersvc.NewDefault().Register(context.Background(), usersvc.RegisterParam{
+		Account:  account,
+		Name:     name,
+		Password: password,
+		ClientIP: "svc_" + account,
+	})
+	assert.Nil(t, bizErr)
+}
+
+func mustLogin(t *testing.T, h *server.Hertz, account, password, ip string) (string, string, string) {
+	t.Helper()
+	rr := perform(
+		h,
+		http.MethodPost,
+		"/api/v1/user/login",
+		fmt.Sprintf(`{"account":"%s","password":"%s"}`, account, password),
+		ut.Header{Key: "Content-Type", Value: "application/json"},
+		ut.Header{Key: "X-Forwarded-For", Value: ip},
+	)
+	assert.Equal(t, http.StatusOK, rr.Code)
 	resp := decodeCommonResp(t, rr.Body.Bytes())
 	assert.True(t, resp.Success)
 	data, ok := resp.Data.(map[string]any)
 	assert.True(t, ok)
-	at, ok := data["access_token"].(string)
+	accessToken, ok := data["access_token"].(string)
 	assert.True(t, ok)
-	assert.True(t, at != "")
-	return at
-}
-
-func parseAccessClaims(t *testing.T, accessToken string) *jwtmw.Claims {
-	t.Helper()
-
-	conf := config.GetJWTConfig()
-	claims := &jwtmw.Claims{}
-	_, err := jwtlib.ParseWithClaims(accessToken, claims, func(token *jwtlib.Token) (any, error) {
-		return []byte(conf.AccessTokenSecret), nil
-	})
-	assert.Nil(t, err)
-	return claims
-}
-
-func loginAndGetAuth(t *testing.T, h *server.Hertz, ip, account, name, password string) (string, string) {
-	t.Helper()
-
-	body := `{"account":"` + account + `","password":"` + password + `"}`
-	rr := perform(h, http.MethodPost, "/api/v1/user/login", body, ut.Header{Key: "X-Forwarded-For", Value: ip})
-	assert.DeepEqual(t, http.StatusOK, rr.Code)
-	r := decodeCommonResp(t, rr.Body.Bytes())
-	assert.True(t, r.Success)
-
-	accessToken := parseAccessToken(t, rr)
-	claims := parseAccessClaims(t, accessToken)
-
-	cookieMap := cookiesFromRecorder(t, rr)
-	sessCookieName := config.GetSessionConf().Name
-	if sessCookieName == "" {
-		sessCookieName = "auth_session_id"
-	}
-	sessID := cookieMap[sessCookieName]
-
-	if sessID == "" || !claims.CheckSum(sessID) {
-		storePrefix := config.GetSessionConf().StorePrefix
-		if storePrefix == "" {
-			storePrefix = "auth_session:"
-		}
-		keys, err := redisdb.GetRedisClient().Keys(context.Background(), storePrefix+"*").Result()
-		assert.Nil(t, err)
-
-		for _, k := range keys {
-			candidate := strings.TrimPrefix(k, storePrefix)
-			if candidate != "" && claims.CheckSum(candidate) {
-				sessID = candidate
-				break
-			}
-		}
-	}
-
-	assert.True(t, sessID != "")
-	assert.True(t, claims.CheckSum(sessID))
-
-	cookieHeader := sessCookieName + "=" + sessID
-	if rt, ok := cookieMap["refresh_token"]; ok && rt != "" {
-		cookieHeader = cookieHeader + "; refresh_token=" + rt
-	}
-	return accessToken, cookieHeader
-}
-
-func deleteAccessTokenExistKey(t *testing.T, accessToken string) {
-	t.Helper()
-
-	claims := parseAccessClaims(t, accessToken)
-	assert.True(t, claims.ID != "")
-
-	err := redisdb.GetRedisClient().Del(context.Background(), "jwt_id_exist:"+claims.ID).Err()
-	assert.Nil(t, err)
-}
-
-func mustCreateUserViaService(t *testing.T, account, name, password string) *domain.User {
-	t.Helper()
-	u, bizErr := usersvc.NewDefault().Register(context.Background(), account, name, password)
-	assert.Nil(t, bizErr)
-	assert.True(t, u != nil)
-	return u
+	assert.NotEmpty(t, accessToken)
+	cookies := extractCookies(rr)
+	sessionCookieHeader := mustCookieHeader(t, cookies, testSessionCookieName)
+	allCookieHeader := mustCookieHeader(t, cookies, testSessionCookieName, testRefreshCookieName)
+	return accessToken, sessionCookieHeader, allCookieHeader
 }
 
 func TestUserRegister(t *testing.T) {
-	mockey.PatchConvey("POST /api/v1/user/register", t, func() {
-		h := newTestServer(t)
-		db := newSQLiteDB(t)
-		patchSQLiteMySQLConn(t, db)
+	h, cleanup := newTestServer(t)
+	defer cleanup()
 
+	t.Run("param error", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/register",
+			`{"account":"a","name":"b","password":"c"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+		)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.ParamError.Code()), resp.Code)
+	})
+
+	t.Run("success and block by ip", func(t *testing.T) {
 		ip := "127.0.0.1"
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/register",
+			`{"account":"account_reg_01","name":"name_reg_01","password":"password01"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "X-Forwarded-For", Value: ip},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
 
-		t.Run("handler拦截: BindAndValidate失败返回400", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			rr := perform(h, http.MethodPost, "/api/v1/user/register", `{"account":"a"}`, ut.Header{Key: "X-Forwarded-For", Value: ip})
-			assert.DeepEqual(t, http.StatusBadRequest, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.ParamError.Code()), resp.Code)
+		rr2 := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/register",
+			`{"account":"account_reg_02","name":"name_reg_02","password":"password02"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "X-Forwarded-For", Value: ip},
+		)
+		assert.Equal(t, http.StatusOK, rr2.Code)
+		resp2 := decodeCommonResp(t, rr2.Body.Bytes())
+		assert.False(t, resp2.Success)
+		assert.Equal(t, int(errs.RequestBlocked.Code()), resp2.Code)
+	})
 
-			exists, err := redisdb.GetRedisClient().Exists(context.Background(), "rate_limit:register_block:"+ip).Result()
-			assert.Nil(t, err)
-			assert.DeepEqual(t, int64(0), exists)
-		})
+	t.Run("duplicate account", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/register",
+			`{"account":"account_dup_01","name":"name_dup_01","password":"password01"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "X-Forwarded-For", Value: "10.0.0.2"},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
 
-		t.Run("正常: 注册成功后RegisterProtection按IP写入block key，随后请求被中间件拦截", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			account := "account01"
-			name := "name0001"
-			password := "password01"
-			rr := perform(h, http.MethodPost, "/api/v1/user/register",
-				`{"account":"`+account+`","name":"`+name+`","password":"`+password+`"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
-
-			exists, err := redisdb.GetRedisClient().Exists(context.Background(), "rate_limit:register_block:"+ip).Result()
-			assert.Nil(t, err)
-			assert.DeepEqual(t, int64(1), exists)
-
-			rr2 := perform(h, http.MethodPost, "/api/v1/user/register",
-				`{"account":"account02","name":"name0002","password":"password02"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusForbidden, rr2.Code)
-			resp2 := decodeCommonResp(t, rr2.Body.Bytes())
-			assert.False(t, resp2.Success)
-			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp2.Code)
-		})
-
-		t.Run("业务错误: 重复账号注册返回UserNameDuplicatedErr", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			ip2 := "127.0.0.2"
-			ip3 := "127.0.0.3"
-			account := "account_dup01"
-			name := "name_dup01"
-			password := "password01"
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/register",
-				`{"account":"`+account+`","name":"`+name+`","password":"`+password+`"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip2},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
-
-			rr2 := perform(h, http.MethodPost, "/api/v1/user/register",
-				`{"account":"`+account+`","name":"name_dup02","password":"password02"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip3},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr2.Code)
-			resp2 := decodeCommonResp(t, rr2.Body.Bytes())
-			assert.False(t, resp2.Success)
-			assert.DeepEqual(t, int(errs.UserNameDuplicatedErr.Code()), resp2.Code)
-		})
+		rr2 := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/register",
+			`{"account":"account_dup_01","name":"name_dup_02","password":"password01"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "X-Forwarded-For", Value: "10.0.0.3"},
+		)
+		assert.Equal(t, http.StatusOK, rr2.Code)
+		resp2 := decodeCommonResp(t, rr2.Body.Bytes())
+		assert.False(t, resp2.Success)
+		assert.Equal(t, int(errs.UserNameDuplicatedErr.Code()), resp2.Code)
 	})
 }
 
 func TestUserLogin(t *testing.T) {
-	mockey.PatchConvey("POST /api/v1/user/login", t, func() {
-		h := newTestServer(t)
-		db := newSQLiteDB(t)
-		patchSQLiteMySQLConn(t, db)
+	h, cleanup := newTestServer(t)
+	defer cleanup()
+	mustCreateUserViaService(t, "account_login_01", "name_login_01", "password01")
 
-		ip := "127.0.0.1"
-
-		t.Run("LoginSuccessRecorder拦截: 参数校验失败返回400", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			rr := perform(h, http.MethodPost, "/api/v1/user/login", `{}`, ut.Header{Key: "X-Forwarded-For", Value: ip})
-			assert.DeepEqual(t, http.StatusBadRequest, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.ParamError.Code()), resp.Code)
-		})
-
-		t.Run("LoginSuccessRecorder拦截: 达到成功次数限制返回403", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			account := "account_limit10"
-			name := "name_limit10"
-			password := "password10"
-			mustCreateUserViaService(t, account, name, password)
-
-			err := redisdb.GetRedisClient().Set(context.Background(), "rate_limit:login_success:"+account, "9", 0).Err()
-			assert.Nil(t, err)
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/login",
-				`{"account":"`+account+`","password":"`+password+`"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusForbidden, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.LoginReachLimit.Code()), resp.Code)
-		})
-
-		t.Run("LoginProtection后置逻辑: 连续密码错误触发block key，随后请求被中间件前置拦截", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			account := "account_fail10"
-			name := "name_fail10"
-			password := "password10"
-			mustCreateUserViaService(t, account, name, password)
-
-			for i := 0; i < 3; i++ {
-				rr := perform(h, http.MethodPost, "/api/v1/user/login",
-					`{"account":"`+account+`","password":"badpassword"}`,
-					ut.Header{Key: "X-Forwarded-For", Value: ip},
-				)
-				assert.DeepEqual(t, http.StatusOK, rr.Code)
-				resp := decodeCommonResp(t, rr.Body.Bytes())
-				assert.False(t, resp.Success)
-				assert.DeepEqual(t, int(errs.PasswordIncorrect.Code()), resp.Code)
-			}
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/login",
-				`{"account":"`+account+`","password":"badpassword"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusForbidden, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp.Code)
-		})
-
-		t.Run("LoginProtection前置逻辑: 小时block key存在返回403", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			err := redisdb.GetRedisClient().Set(context.Background(), "rate_limit:login_block_h:"+ip, "1", 0).Err()
-			assert.Nil(t, err)
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/login", `{}`, ut.Header{Key: "X-Forwarded-For", Value: ip})
-			assert.DeepEqual(t, http.StatusForbidden, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp.Code)
-		})
-
-		t.Run("LoginProtection前置逻辑: 分钟block key存在返回403", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			err := redisdb.GetRedisClient().Set(context.Background(), "rate_limit:login_block_m:"+ip, "1", 0).Err()
-			assert.Nil(t, err)
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/login", `{}`, ut.Header{Key: "X-Forwarded-For", Value: ip})
-			assert.DeepEqual(t, http.StatusForbidden, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp.Code)
-		})
-
-		t.Run("LoginProtection后置逻辑: 非账户类失败不计入login_fail", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			patch := mockey.Mock((*usersvc.Service).Login).
-				Return((*domain.User)(nil), uint(0), errs.ServerError.SetMsg("mock server error")).
-				Build()
-			defer patch.UnPatch()
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/login",
-				`{"account":"account_server","password":"password11"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.ServerError.Code()), resp.Code)
-
-			exists, err := redisdb.GetRedisClient().Exists(context.Background(), "rate_limit:login_fail:"+ip).Result()
-			assert.Nil(t, err)
-			assert.DeepEqual(t, int64(0), exists)
-		})
-
-		t.Run("LoginProtection后置逻辑: Level2触发小时block key", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			account := "account_lvl2_10"
-			name := "name_lvl2_10"
-			password := "password10"
-			mustCreateUserViaService(t, account, name, password)
-
-			err := redisdb.GetRedisClient().Set(context.Background(), "rate_limit:login_fail:"+ip, "2", 0).Err()
-			assert.Nil(t, err)
-			err = redisdb.GetRedisClient().Set(context.Background(), "login_fail_level:"+ip, "1", 0).Err()
-			assert.Nil(t, err)
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/login",
-				`{"account":"`+account+`","password":"badpassword"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.PasswordIncorrect.Code()), resp.Code)
-
-			exists, err := redisdb.GetRedisClient().Exists(context.Background(), "rate_limit:login_block_h:"+ip).Result()
-			assert.Nil(t, err)
-			assert.DeepEqual(t, int64(1), exists)
-
-			rr2 := perform(h, http.MethodPost, "/api/v1/user/login",
-				`{"account":"`+account+`","password":"badpassword"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusForbidden, rr2.Code)
-			resp2 := decodeCommonResp(t, rr2.Body.Bytes())
-			assert.False(t, resp2.Success)
-			assert.DeepEqual(t, int(errs.RequestBlocked.Code()), resp2.Code)
-		})
-
-		t.Run("正常: 登录成功返回access_token并下发session与refresh_token cookie", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			account := "account_ok10"
-			name := "name_ok10"
-			password := "password10"
-			mustCreateUserViaService(t, account, name, password)
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/login",
-				`{"account":"`+account+`","password":"`+password+`"}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
-
-			at := parseAccessToken(t, rr)
-			assert.True(t, at != "")
-
-			cookies := cookiesFromRecorder(t, rr)
-			assert.True(t, cookies["auth_session_id"] != "")
-			assert.True(t, cookies["refresh_token"] != "")
-
-			count, err := redisdb.GetRedisClient().Get(context.Background(), "rate_limit:login_success:"+account).Int64()
-			assert.Nil(t, err)
-			assert.True(t, count >= 1)
-		})
+	t.Run("param error", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/login",
+			`{"account":"a","password":"b"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+		)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.ParamError.Code()), resp.Code)
 	})
-}
 
-func TestPing(t *testing.T) {
-	h := newTestServer(t)
-	rr := perform(h, http.MethodGet, "/ping", "")
-	assert.DeepEqual(t, http.StatusOK, rr.Code)
+	t.Run("wrong password", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/login",
+			`{"account":"account_login_01","password":"badpassword"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "X-Forwarded-For", Value: "10.0.1.1"},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.PasswordIncorrect.Code()), resp.Code)
+	})
 
-	var out map[string]any
-	err := json.Unmarshal(rr.Body.Bytes(), &out)
-	assert.Nil(t, err)
-	assert.DeepEqual(t, "pong", out["message"])
+	t.Run("success", func(t *testing.T) {
+		accessToken, sessionCookieHeader, allCookieHeader := mustLogin(t, h, "account_login_01", "password01", "10.0.1.2")
+		assert.NotEmpty(t, accessToken)
+		assert.NotEmpty(t, sessionCookieHeader)
+		assert.NotEmpty(t, allCookieHeader)
+	})
+
+	t.Run("block after repeated failures", func(t *testing.T) {
+		ip := "10.0.1.3"
+		for i := 0; i < 3; i++ {
+			_ = perform(
+				h,
+				http.MethodPost,
+				"/api/v1/user/login",
+				`{"account":"account_login_01","password":"badpassword"}`,
+				ut.Header{Key: "Content-Type", Value: "application/json"},
+				ut.Header{Key: "X-Forwarded-For", Value: ip},
+			)
+		}
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/login",
+			`{"account":"account_login_01","password":"password01"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "X-Forwarded-For", Value: ip},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.RequestBlocked.Code()), resp.Code)
+	})
 }
 
 func TestRefreshToken(t *testing.T) {
-	mockey.PatchConvey("POST /api/v1/user/refresh_token", t, func() {
-		h := newTestServer(t)
-		db := newSQLiteDB(t)
-		patchSQLiteMySQLConn(t, db)
+	h, cleanup := newTestServer(t)
+	defer cleanup()
+	mustCreateUserViaService(t, "account_refresh_01", "name_refresh_01", "password01")
+	accessToken, sessionCookieHeader, allCookieHeader := mustLogin(t, h, "account_refresh_01", "password01", "10.0.2.1")
+	assert.NotEmpty(t, accessToken)
 
-		ip := "127.0.0.1"
-		account := "account20"
-		name := "name0020"
-		password := "password20"
-		mustCreateUserViaService(t, account, name, password)
+	t.Run("missing refresh cookie", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/refresh_token",
+			`{}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
 
-		t.Run("handler拦截: 非法JSON返回400", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			rr := perform(h, http.MethodPost, "/api/v1/user/refresh_token", `{"x":`, ut.Header{Key: "X-Forwarded-For", Value: ip})
-			assert.DeepEqual(t, http.StatusBadRequest, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.ParamError.Code()), resp.Code)
-		})
+	t.Run("invalid refresh cookie", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/refresh_token",
+			`{}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader + "; " + testRefreshCookieName + "=invalid"},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
 
-		t.Run("handler拦截: 缺少refresh_token cookie返回Unauthorized", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			rr := perform(h, http.MethodPost, "/api/v1/user/refresh_token", `{}`, ut.Header{Key: "X-Forwarded-For", Value: ip})
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.Unauthorized.Code()), resp.Code)
-		})
-
-		t.Run("handler拦截: refresh_token无效返回Unauthorized", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			_, cookieHeader := loginAndGetAuth(t, h, ip, account, name, password)
-			cookieHeader = setCookie(cookieHeader, "refresh_token", "bad")
-
-			rr := perform(h, http.MethodPost, "/api/v1/user/refresh_token", `{}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-				ut.Header{Key: "Cookie", Value: cookieHeader},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.Unauthorized.Code()), resp.Code)
-		})
-
-		t.Run("正常: 使用refresh_token刷新并下发新token与refresh cookie", func(t *testing.T) {
-			redisdb.GetRedisClient().FlushAll(context.Background())
-			_, cookieHeader := loginAndGetAuth(t, h, ip, account, name, password)
-			rr := perform(h, http.MethodPost, "/api/v1/user/refresh_token", `{}`,
-				ut.Header{Key: "X-Forwarded-For", Value: ip},
-				ut.Header{Key: "Cookie", Value: cookieHeader},
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
-
-			cookies := cookiesFromRecorder(t, rr)
-			assert.True(t, cookies["refresh_token"] != "")
-		})
+	t.Run("success", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/refresh_token",
+			`{}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Cookie", Value: allCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
+		data, ok := resp.Data.(map[string]any)
+		assert.True(t, ok)
+		_, ok = data["access_token"].(string)
+		assert.True(t, ok)
 	})
 }
 
-func TestAuthorizedEndpoints(t *testing.T) {
-	mockey.PatchConvey("JWT + CredentialCheck保护的接口", t, func() {
-		h := newTestServer(t)
-		db := newSQLiteDB(t)
-		patchSQLiteMySQLConn(t, db)
+func TestGetUserInfo(t *testing.T) {
+	h, cleanup := newTestServer(t)
+	defer cleanup()
+	mustCreateUserViaService(t, "account_info_01", "name_info_01", "password01")
+	accessToken, sessionCookieHeader, _ := mustLogin(t, h, "account_info_01", "password01", "10.0.3.1")
 
-		ip := "127.0.0.1"
-		account := "account30"
-		name := "name0030"
-		password := "password30"
-		mustCreateUserViaService(t, account, name, password)
+	t.Run("unauthorized without token", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+		)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
 
-		accessToken, cookieHeader := loginAndGetAuth(t, h, ip, account, name, password)
+	t.Run("success", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
+	})
+}
 
-		authHeaders := func(token, cookies string) []ut.Header {
-			return []ut.Header{
-				{Key: "X-Forwarded-For", Value: ip},
-				{Key: "Authorization", Value: token},
-				{Key: "Cookie", Value: cookies},
-			}
-		}
+func TestUpdateInfo(t *testing.T) {
+	h, cleanup := newTestServer(t)
+	defer cleanup()
+	mustCreateUserViaService(t, "account_update_info_01", "name_info_old", "password01")
+	accessToken, sessionCookieHeader, _ := mustLogin(t, h, "account_update_info_01", "password01", "10.0.4.1")
 
-		t.Run("jwt.ValidateMW拦截: Authorization为空返回401", func(t *testing.T) {
-			rr := perform(h, http.MethodGet, "/api/v1/user/info", "", ut.Header{Key: "X-Forwarded-For", Value: ip})
-			assert.DeepEqual(t, http.StatusUnauthorized, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.Unauthorized.Code()), resp.Code)
-		})
+	t.Run("unauthorized", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/update_info",
+			`{"name":"name_info_new"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+		)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
 
-		t.Run("jwt.ValidateMW拦截: token存在性校验失败返回401", func(t *testing.T) {
-			deleteAccessTokenExistKey(t, accessToken)
-			rr := perform(h, http.MethodGet, "/api/v1/user/info", "", authHeaders(accessToken, cookieHeader)...)
-			assert.DeepEqual(t, http.StatusUnauthorized, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.Unauthorized.Code()), resp.Code)
-		})
+	t.Run("param error", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/update_info",
+			`{"name":"a"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+	})
 
-		t.Run("正常: 获取用户信息返回200", func(t *testing.T) {
-			accessToken, cookieHeader = loginAndGetAuth(t, h, ip, account, name, password)
-			rr := perform(h, http.MethodGet, "/api/v1/user/info", "", authHeaders(accessToken, cookieHeader)...)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
-			data, ok := resp.Data.(map[string]any)
-			assert.True(t, ok)
-			assert.DeepEqual(t, account, data["account"])
-			assert.DeepEqual(t, name, data["name"])
-		})
+	t.Run("success and verify info", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/update_info",
+			`{"name":"name_info_new"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
 
-		t.Run("UpdateInfo handler拦截: 参数校验失败返回400", func(t *testing.T) {
-			accessToken, cookieHeader = loginAndGetAuth(t, h, ip, account, name, password)
-			rr := perform(h, http.MethodPost, "/api/v1/user/update_info", `{"name":"a"}`, authHeaders(accessToken, cookieHeader)...)
-			assert.DeepEqual(t, http.StatusBadRequest, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.ParamError.Code()), resp.Code)
-		})
+		infoRR := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, infoRR.Code)
+		infoResp := decodeCommonResp(t, infoRR.Body.Bytes())
+		assert.True(t, infoResp.Success)
+		data, ok := infoResp.Data.(map[string]any)
+		assert.True(t, ok)
+		assert.Equal(t, "name_info_new", data["name"])
+	})
+}
 
-		t.Run("正常: UpdateInfo成功后再次/info能读到新name", func(t *testing.T) {
-			accessToken, cookieHeader = loginAndGetAuth(t, h, ip, account, name, password)
-			newName := "name_new30"
-			rr := perform(h, http.MethodPost, "/api/v1/user/update_info", `{"name":"`+newName+`"}`, authHeaders(accessToken, cookieHeader)...)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
+func TestUpdatePassword(t *testing.T) {
+	h, cleanup := newTestServer(t)
+	defer cleanup()
+	mustCreateUserViaService(t, "account_update_pwd_01", "name_pwd_01", "password01")
+	accessToken, sessionCookieHeader, _ := mustLogin(t, h, "account_update_pwd_01", "password01", "10.0.5.1")
 
-			rr2 := perform(h, http.MethodGet, "/api/v1/user/info", "", authHeaders(accessToken, cookieHeader)...)
-			assert.DeepEqual(t, http.StatusOK, rr2.Code)
-			resp2 := decodeCommonResp(t, rr2.Body.Bytes())
-			assert.True(t, resp2.Success)
-			data2, ok := resp2.Data.(map[string]any)
-			assert.True(t, ok)
-			assert.DeepEqual(t, newName, data2["name"])
-		})
+	t.Run("param error", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/update_password",
+			`{"old_password":"a","new_password":"b"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+	})
 
-		t.Run("UpdatePassword handler拦截: 旧密码错误返回业务错误", func(t *testing.T) {
-			accessToken, cookieHeader = loginAndGetAuth(t, h, ip, account, name, password)
-			rr := perform(h, http.MethodPost, "/api/v1/user/update_password",
-				`{"old_password":"badpassword","new_password":"password31"}`,
-				authHeaders(accessToken, cookieHeader)...,
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.False(t, resp.Success)
-			assert.DeepEqual(t, int(errs.PasswordIncorrect.Code()), resp.Code)
-		})
+	t.Run("wrong old password", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/update_password",
+			`{"old_password":"badpassword","new_password":"password02"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.PasswordIncorrect.Code()), resp.Code)
+	})
 
-		t.Run("串联: 改密成功后同一session访问/info被CredentialCheck拦截，重新登录后恢复", func(t *testing.T) {
-			accessToken, cookieHeader = loginAndGetAuth(t, h, ip, account, name, password)
+	t.Run("success then old session expired", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/update_password",
+			`{"old_password":"password01","new_password":"password02"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
 
-			rr := perform(h, http.MethodPost, "/api/v1/user/update_password",
-				`{"old_password":"`+password+`","new_password":"password31"}`,
-				authHeaders(accessToken, cookieHeader)...,
-			)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
+		infoRR := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusForbidden, infoRR.Code)
+		infoResp := decodeCommonResp(t, infoRR.Body.Bytes())
+		assert.False(t, infoResp.Success)
+		assert.Equal(t, int(errs.SessionExpired.Code()), infoResp.Code)
+	})
 
-			rr2 := perform(h, http.MethodGet, "/api/v1/user/info", "", authHeaders(accessToken, cookieHeader)...)
-			assert.DeepEqual(t, http.StatusForbidden, rr2.Code)
-			resp2 := decodeCommonResp(t, rr2.Body.Bytes())
-			assert.False(t, resp2.Success)
-			assert.DeepEqual(t, int(errs.SessionExpired.Code()), resp2.Code)
+	t.Run("relogin with new password", func(t *testing.T) {
+		newAccessToken, newSessionCookieHeader, _ := mustLogin(t, h, "account_update_pwd_01", "password02", "10.0.5.2")
+		infoRR := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: newAccessToken},
+			ut.Header{Key: "Cookie", Value: newSessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, infoRR.Code)
+		infoResp := decodeCommonResp(t, infoRR.Body.Bytes())
+		assert.True(t, infoResp.Success)
+	})
+}
 
-			accessToken2, cookieHeader2 := loginAndGetAuth(t, h, ip, account, name, "password31")
-			rr3 := perform(h, http.MethodGet, "/api/v1/user/info", "", authHeaders(accessToken2, cookieHeader2)...)
-			assert.DeepEqual(t, http.StatusOK, rr3.Code)
-			resp3 := decodeCommonResp(t, rr3.Body.Bytes())
-			assert.True(t, resp3.Success)
-		})
+func TestUserCrossConsistency(t *testing.T) {
+	h, cleanup := newTestServer(t)
+	defer cleanup()
+	mustCreateUserViaService(t, "account_cross_01", "name_cross_01", "password01")
+	mustCreateUserViaService(t, "account_cross_02", "name_cross_02", "password01")
 
-		t.Run("Logout正常: 登出成功并清理refresh_token cookie", func(t *testing.T) {
-			logoutAccount := "account_logout30"
-			logoutName := "name_logout30"
-			logoutPassword := "password_logout30"
-			mustCreateUserViaService(t, logoutAccount, logoutName, logoutPassword)
-			accessToken, cookieHeader = loginAndGetAuth(t, h, ip, logoutAccount, logoutName, logoutPassword)
-			rr := perform(h, http.MethodPost, "/api/v1/user/logout", `{}`, authHeaders(accessToken, cookieHeader)...)
-			assert.DeepEqual(t, http.StatusOK, rr.Code)
-			resp := decodeCommonResp(t, rr.Body.Bytes())
-			assert.True(t, resp.Success)
+	accessToken1, sessionCookieHeader1, allCookieHeader1 := mustLogin(t, h, "account_cross_01", "password01", "10.0.7.1")
+	_, sessionCookieHeader2, allCookieHeader2 := mustLogin(t, h, "account_cross_02", "password01", "10.0.7.2")
 
-			cookies := cookiesFromRecorder(t, rr)
-			_, ok := cookies["refresh_token"]
-			assert.True(t, ok)
-			assert.True(t, cookies["refresh_token"] == "")
-		})
+	t.Run("user2 session with user1 token get info unauthorized", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: accessToken1},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader2},
+		)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
+
+	t.Run("user2 session with user1 token update password unauthorized", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/update_password",
+			`{"old_password":"password01","new_password":"password02"}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken1},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader2},
+		)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
+
+	t.Run("user2 session with user1 token logout unauthorized", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/logout",
+			`{}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken1},
+			ut.Header{Key: "Cookie", Value: allCookieHeader2},
+		)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
+
+	t.Run("user2 session with user1 refresh token refresh unauthorized", func(t *testing.T) {
+		refreshToken1 := cookieValue(allCookieHeader1, testRefreshCookieName)
+		assert.NotEmpty(t, refreshToken1)
+		mixedCookie := sessionCookieHeader2 + "; " + testRefreshCookieName + "=" + refreshToken1
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/refresh_token",
+			`{}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Cookie", Value: mixedCookie},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
+
+	t.Run("user1 token without session cookie unauthorized", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: accessToken1},
+		)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
+	})
+
+	t.Run("user1 token with user1 session still valid", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: accessToken1},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader1},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
+	})
+}
+
+func TestLogout(t *testing.T) {
+	h, cleanup := newTestServer(t)
+	defer cleanup()
+	mustCreateUserViaService(t, "account_logout_01", "name_logout_01", "password01")
+	accessToken, sessionCookieHeader, allCookieHeader := mustLogin(t, h, "account_logout_01", "password01", "10.0.6.1")
+
+	t.Run("success", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodPost,
+			"/api/v1/user/logout",
+			`{}`,
+			ut.Header{Key: "Content-Type", Value: "application/json"},
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: allCookieHeader},
+		)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.True(t, resp.Success)
+	})
+
+	t.Run("old token becomes unauthorized", func(t *testing.T) {
+		rr := perform(
+			h,
+			http.MethodGet,
+			"/api/v1/user/info",
+			"",
+			ut.Header{Key: "Authorization", Value: accessToken},
+			ut.Header{Key: "Cookie", Value: sessionCookieHeader},
+		)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+		resp := decodeCommonResp(t, rr.Body.Bytes())
+		assert.False(t, resp.Success)
+		assert.Equal(t, int(errs.Unauthorized.Code()), resp.Code)
 	})
 }

@@ -9,12 +9,21 @@ import (
 	"doing_now/be/biz/middleware/session"
 	"doing_now/be/biz/model/dto"
 	"doing_now/be/biz/model/errs"
+	"doing_now/be/biz/service/security"
 	"doing_now/be/biz/service/user"
 	"doing_now/be/biz/util/resp"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
 	"github.com/hertz-contrib/sessions"
+)
+
+const (
+	sessionUserIDKey            = "user_id"
+	sessionAccountKey           = "account"
+	sessionCredentialVersionKey = "credential_version"
+	unknownIP                   = "unknown"
+	msgUserNotLoggedIn          = "User not logged in"
 )
 
 // Register 用户注册接口
@@ -28,6 +37,7 @@ import (
 //	@Success		200	{object}	dto.CommonResp{data=dto.RegisterResp}
 //	@Router			/api/v1/user/register [POST]
 func Register(ctx context.Context, c *app.RequestContext) {
+	clientIP := getClientIP(c)
 	var req dto.RegisterReq
 	if err := c.BindAndValidate(&req); err != nil {
 		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
@@ -35,7 +45,12 @@ func Register(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	u, err := user.NewDefault().Register(ctx, req.Account, req.Name, req.Password)
+	u, err := user.NewDefault().Register(ctx, user.RegisterParam{
+		Account:  req.Account,
+		Name:     req.Name,
+		Password: req.Password,
+		ClientIP: clientIP,
+	})
 	if err != nil {
 		resp.FailResp(c, err)
 		return
@@ -63,16 +78,21 @@ func Login(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	u, credentialVersion, bizErr := user.NewDefault().Login(ctx, req.Account, req.Password)
+	clientIP := getClientIP(c)
+	u, credentialVersion, bizErr := user.NewDefault().Login(ctx, user.LoginParam{
+		Account:  req.Account,
+		Password: req.Password,
+		ClientIP: clientIP,
+	})
 	if bizErr != nil {
 		resp.FailResp(c, bizErr)
 		return
 	}
 
 	sess := sessions.Default(c)
-	sess.Set("user_id", u.UserID)
-	sess.Set("account", u.Account)
-	sess.Set("credential_version", credentialVersion)
+	sess.Set(sessionUserIDKey, u.UserID)
+	sess.Set(sessionAccountKey, u.Account)
+	sess.Set(sessionCredentialVersionKey, credentialVersion)
 	if err := sess.Save(); err != nil {
 		hlog.CtxErrorf(ctx, "sess.Save err: %v", err)
 		resp.AbortWithErr(c, errs.ServerError.SetErr(err), http.StatusInternalServerError)
@@ -97,6 +117,7 @@ func Login(ctx context.Context, c *app.RequestContext) {
 	}
 	jwt.SetRefreshTokenCookie(c, refreshToken, refreshExpAt)
 
+	security.RecordLoginSuccess(ctx, req.Account)
 	resp.SuccessResp(c, dto.LoginResp{
 		AccessToken: accessToken,
 		ExpiresAt:   expAt,
@@ -147,8 +168,8 @@ func RefreshToken(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	userID, _ := sess.Get("user_id").(string)
-	account, _ := sess.Get("account").(string)
+	userID, _ := sess.Get(sessionUserIDKey).(string)
+	account, _ := sess.Get(sessionAccountKey).(string)
 	if userID == "" || account == "" {
 		hlog.CtxNoticef(ctx, "userID or account is empty")
 		resp.FailResp(c, errs.Unauthorized)
@@ -195,6 +216,10 @@ func RefreshToken(ctx context.Context, c *app.RequestContext) {
 //	@Header			200				{string}	set-cookie	"cookie"
 //	@Router			/api/v1/user/logout [POST]
 func Logout(ctx context.Context, c *app.RequestContext) {
+	if !checkCredentialValid(ctx, c) {
+		return
+	}
+
 	var req dto.LogoutReq
 	if err := c.BindAndValidate(&req); err != nil {
 		hlog.CtxNoticef(ctx, "Logout BindAndValidate err: %v", err)
@@ -233,6 +258,10 @@ func Logout(ctx context.Context, c *app.RequestContext) {
 //	@Success		200				{object}	dto.CommonResp{data=dto.GetUserInfoResp}
 //	@Router			/api/v1/user/info [GET]
 func GetUserInfo(ctx context.Context, c *app.RequestContext) {
+	if !checkCredentialValid(ctx, c) {
+		return
+	}
+
 	var req dto.GetUserInfoReq
 	if err := c.BindAndValidate(&req); err != nil {
 		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
@@ -246,7 +275,9 @@ func GetUserInfo(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	u, bizErr := user.NewDefault().GetByUserID(ctx, payload.UserID)
+	u, bizErr := user.NewDefault().GetByUserID(ctx, user.GetByUserIDParam{
+		UserID: payload.UserID,
+	})
 	if bizErr != nil {
 		resp.FailResp(c, bizErr)
 		return
@@ -273,6 +304,10 @@ func GetUserInfo(ctx context.Context, c *app.RequestContext) {
 //	@Success		200				{object}	dto.CommonResp{data=dto.UpdateInfoResp}
 //	@Router			/api/v1/user/update_info [POST]
 func UpdateInfo(ctx context.Context, c *app.RequestContext) {
+	if !checkCredentialValid(ctx, c) {
+		return
+	}
+
 	var req dto.UpdateInfoReq
 	if err := c.BindAndValidate(&req); err != nil {
 		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
@@ -286,7 +321,10 @@ func UpdateInfo(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if err := user.NewDefault().UpdateInfo(ctx, payload.UserID, req.Name); err != nil {
+	if err := user.NewDefault().UpdateInfo(ctx, user.UpdateInfoParam{
+		UserID: payload.UserID,
+		Name:   req.Name,
+	}); err != nil {
 		resp.FailResp(c, err)
 		return
 	}
@@ -306,6 +344,10 @@ func UpdateInfo(ctx context.Context, c *app.RequestContext) {
 //	@Success		200				{object}	dto.CommonResp{data=dto.UpdatePasswordResp}
 //	@Router			/api/v1/user/update_password [POST]
 func UpdatePassword(ctx context.Context, c *app.RequestContext) {
+	if !checkCredentialValid(ctx, c) {
+		return
+	}
+
 	var req dto.UpdatePasswordReq
 	if err := c.BindAndValidate(&req); err != nil {
 		hlog.CtxNoticef(ctx, "BindAndValidate err: %v", err)
@@ -319,10 +361,40 @@ func UpdatePassword(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if err := user.NewDefault().UpdatePassword(ctx, payload.UserID, req.OldPassword, req.NewPassword); err != nil {
+	if err := user.NewDefault().UpdatePassword(ctx, user.UpdatePasswordParam{
+		UserID:      payload.UserID,
+		OldPassword: req.OldPassword,
+		NewPassword: req.NewPassword,
+	}); err != nil {
 		resp.FailResp(c, err)
 		return
 	}
 
 	resp.SuccessResp(c, dto.UpdatePasswordResp{})
+}
+
+func getClientIP(c *app.RequestContext) string {
+	ip := c.ClientIP()
+	if ip == "" {
+		return unknownIP
+	}
+	return ip
+}
+
+func checkCredentialValid(ctx context.Context, c *app.RequestContext) bool {
+	sess := sessions.Default(c)
+	userID, ok1 := sess.Get(sessionUserIDKey).(string)
+	sessCV, ok2 := sess.Get(sessionCredentialVersionKey).(uint)
+	if !ok1 || userID == "" || !ok2 {
+		resp.AbortWithErr(c, errs.Unauthorized.SetMsg(msgUserNotLoggedIn), http.StatusUnauthorized)
+		return false
+	}
+	currentCV, getCredentialErr := user.NewDefault().GetCredentialVersion(ctx, user.GetCredentialVersionParam{
+		UserID: userID,
+	})
+	if bizErr := security.CheckCredentialValid(ctx, userID, sessCV, currentCV, getCredentialErr); bizErr != nil {
+		resp.AbortWithErr(c, bizErr, http.StatusForbidden)
+		return false
+	}
+	return true
 }

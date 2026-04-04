@@ -86,3 +86,91 @@ Content-Type: {{contentType}}
 GET {{host}}/api/v1/user/info
 Content-Type: {{contentType}}
 Authorization: {{newAccessToken}}
+
+### 3. Cross-user consistency (aligned with main_test TestUserCrossConsistency)
+@account1 = cross_user_001_http
+@account2 = cross_user_002_http
+@name1 = Cross User 001
+@name2 = Cross User 002
+@passwordCross = password123
+
+### 3.1 register user1 (IP1)
+# @name register1
+POST {{host}}/api/v1/user/register
+Content-Type: {{contentType}}
+X-Forwarded-For: 10.31.0.1
+
+{
+  "account": "{{account1}}",
+  "name": "{{name1}}",
+  "password": "{{passwordCross}}"
+}
+
+### 3.2 register user2 (IP2)
+# @name register2
+POST {{host}}/api/v1/user/register
+Content-Type: {{contentType}}
+X-Forwarded-For: 10.31.0.2
+
+{
+  "account": "{{account2}}",
+  "name": "{{name2}}",
+  "password": "{{passwordCross}}"
+}
+
+### 3.3 login user1 and capture token1
+# @name login1
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+X-Forwarded-For: 10.31.1.1
+
+{
+  "account": "{{account1}}",
+  "password": "{{passwordCross}}"
+}
+
+### 3.4 login user2 (cookie jar will now be session2)
+# @name login2
+POST {{host}}/api/v1/user/login
+Content-Type: {{contentType}}
+X-Forwarded-For: 10.31.1.2
+
+{
+  "account": "{{account2}}",
+  "password": "{{passwordCross}}"
+}
+
+### 3.5 token1 + session2 => /info unauthorized (expect 401)
+@token1 = {{login1.response.body.data.access_token}}
+GET {{host}}/api/v1/user/info
+Content-Type: {{contentType}}
+Authorization: {{token1}}
+
+### 3.6 token1 + session2 => /update_password unauthorized (expect 401)
+POST {{host}}/api/v1/user/update_password
+Content-Type: {{contentType}}
+Authorization: {{token1}}
+
+{
+  "old_password": "{{passwordCross}}",
+  "new_password": "newpassword123"
+}
+
+### 3.7 token1 + session2 => /logout unauthorized (expect 401)
+POST {{host}}/api/v1/user/logout
+Content-Type: {{contentType}}
+Authorization: {{token1}}
+
+{}
+
+### 3.8 token1 without session cookie => /info unauthorized (expect 401)
+# Manual: clear cookie jar in HTTP client before sending this request
+GET {{host}}/api/v1/user/info
+Content-Type: {{contentType}}
+Authorization: {{token1}}
+
+### 3.9 token1 + session1 => /info success (expect 200)
+# Manual: run 3.3(login1) again right before this request to restore session1 in cookie jar
+GET {{host}}/api/v1/user/info
+Content-Type: {{contentType}}
+Authorization: {{token1}}
